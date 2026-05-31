@@ -8,10 +8,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>POS System Pro</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -625,7 +625,15 @@
         crmLeads: mergeList(local.crmLeads, cloud.crmLeads),
         promoCoupons: mergeList(local.promoCoupons, cloud.promoCoupons),
         stockLedger: mergeList(local.stockLedger, cloud.stockLedger),
-        damagedGoods: mergeList(local.damagedGoods, cloud.damagedGoods)
+        damagedGoods: mergeList(local.damagedGoods, cloud.damagedGoods),
+        productBundles: mergeList(local.productBundles || [], cloud.productBundles || []),
+        goodsReceipts: mergeList(local.goodsReceipts || [], cloud.goodsReceipts || []),
+        shopIncidents: mergeList(local.shopIncidents || [], cloud.shopIncidents || []),
+        handovers: mergeList(local.handovers || [], cloud.handovers || []),
+        pettyCash: mergeList(local.pettyCash || [], cloud.pettyCash || []),
+        taxRecords: mergeList(local.taxRecords || [], cloud.taxRecords || []),
+        staffKPI: mergeList(local.staffKPI || [], cloud.staffKPI || []),
+        salesTargets: cloud.salesTargets || local.salesTargets || { target: 50000000, month: new Date().toISOString().slice(0, 7) }
       };
     }
 
@@ -2593,6 +2601,14 @@
           {dashboardTab === 'audit' && renderFullAuditLogs()}
           {dashboardTab === 'approvals' && renderApprovals()}
 
+          {selectedStaffDetail && (
+            <StaffActivityModal
+              user={selectedStaffDetail}
+              onClose={() => setSelectedStaffDetail(null)}
+              allTx={db.transactions || []}
+              db={db}
+            />
+          )}
         </div>
       );
     }
@@ -6128,6 +6144,7 @@
       const [showForm, setShowForm] = useState(false);
       const [showApproveModal, setShowApproveModal] = useState(null);
       const [showRejectModal, setShowRejectModal] = useState(null);
+      const [editingPurchase, setEditingPurchase] = useState(null);
       
       const [productName, setProductName] = useState('');
       const [supplierName, setSupplierName] = useState('');
@@ -6298,6 +6315,103 @@
         }
       };
 
+      const handleDeletePurchase = (id) => {
+        if (!confirm('Apakah Anda yakin ingin menghapus catatan pengadaan ini?')) return;
+        const currentDb = getDB();
+        const idx = currentDb.purchases.findIndex(p => p.id === id);
+        if (idx !== -1) {
+          const p = currentDb.purchases[idx];
+          
+          if (p.status === 'approved') {
+            let matchedProduct = null;
+            if (p.productId) {
+              matchedProduct = currentDb.products.find(x => x.id === p.productId);
+            } else {
+              matchedProduct = currentDb.products.find(x => x.name.toLowerCase() === p.productName.toLowerCase());
+            }
+
+            if (matchedProduct) {
+              const finalQty = p.approvedQty || p.qty || 0;
+              if (p.type === 'buy') {
+                matchedProduct.stock = Math.max(0, parseFloat((matchedProduct.stock - finalQty).toFixed(3)));
+              } else if (['refund', 'take'].includes(p.type)) {
+                matchedProduct.stock = parseFloat((matchedProduct.stock + finalQty).toFixed(3));
+              }
+              matchedProduct.updatedAt = new Date().toISOString();
+            }
+          }
+
+          currentDb.purchases.splice(idx, 1);
+          logAuditAction('Hapus Pengadaan', `Menghapus pengadaan "${p.productName}" (${p.id})`, app.user);
+          saveDB(currentDb);
+          app.refreshDB();
+          app.addToast('Pengadaan berhasil dihapus', 'success');
+        }
+      };
+
+      const handleSaveEditPurchase = (e) => {
+        e.preventDefault();
+        const currentDb = getDB();
+        const idx = currentDb.purchases.findIndex(p => p.id === editingPurchase.id);
+        if (idx !== -1) {
+          const oldP = currentDb.purchases[idx];
+          
+          let pName = editingPurchase.productName;
+          if (editingPurchase.productId) {
+            const match = currentDb.products.find(p => p.id === editingPurchase.productId);
+            if (match) pName = match.name;
+          }
+
+          const newQty = parseFloat(editingPurchase.qty) || 0;
+          const newCost = parseFloat(editingPurchase.cost) || 0;
+          const newTotal = newQty * newCost;
+
+          if (oldP.status === 'approved') {
+            let matchedProduct = null;
+            if (oldP.productId) {
+              matchedProduct = currentDb.products.find(x => x.id === oldP.productId);
+            } else {
+              matchedProduct = currentDb.products.find(x => x.name.toLowerCase() === oldP.productName.toLowerCase());
+            }
+
+            if (matchedProduct) {
+              const oldQty = oldP.approvedQty || oldP.qty || 0;
+              
+              if (oldP.type === 'buy') {
+                matchedProduct.stock = Math.max(0, matchedProduct.stock - oldQty);
+              } else if (['refund', 'take'].includes(oldP.type)) {
+                matchedProduct.stock = matchedProduct.stock + oldQty;
+              }
+
+              if (editingPurchase.type === 'buy') {
+                matchedProduct.stock = parseFloat((matchedProduct.stock + newQty).toFixed(3));
+                matchedProduct.cost = newCost;
+              } else if (['refund', 'take'].includes(editingPurchase.type)) {
+                matchedProduct.stock = Math.max(0, parseFloat((matchedProduct.stock - newQty).toFixed(3)));
+              }
+              matchedProduct.updatedAt = new Date().toISOString();
+            }
+          }
+
+          oldP.productName = pName;
+          oldP.productId = editingPurchase.productId || null;
+          oldP.supplierName = editingPurchase.supplierName;
+          oldP.qty = newQty;
+          oldP.approvedQty = newQty;
+          oldP.cost = newCost;
+          oldP.total = newTotal;
+          oldP.type = editingPurchase.type;
+          oldP.notes = editingPurchase.notes;
+          oldP.updatedAt = new Date().toISOString();
+
+          logAuditAction('Edit Pengadaan', `Mengedit pengadaan "${pName}" (${editingPurchase.id})`, app.user);
+          saveDB(currentDb);
+          app.refreshDB();
+          setEditingPurchase(null);
+          app.addToast('Pengadaan berhasil diperbarui', 'success');
+        }
+      };
+
       return (
         <div className="pb-24 md:pb-8 text-left">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -6305,7 +6419,7 @@
               <h3 className="text-xl font-bold text-zinc-800">Manajemen Pengadaan & Ritel</h3>
               <p className="text-sm text-zinc-500">Ajukan pembelian produk, retur barang, atau kelola inventaris ritel.</p>
             </div>
-            {['admin', 'owner', 'keuangan'].includes(app.user?.role) && (
+            {(['admin', 'owner', 'keuangan', 'manager'].includes(app.user?.role) || ['admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'].includes(app.user?.roleId)) && (
               <button
                 onClick={() => {
                   setProductName('');
@@ -6418,6 +6532,24 @@
                               >
                                 <Icon name="slash" size={14} />
                               </button>
+                            )}
+                            {(app.user?.role === 'owner' || app.user?.role === 'admin' || ['admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'].includes(app.user?.roleId)) && (
+                              <>
+                                <button
+                                  onClick={() => setEditingPurchase({ ...p })}
+                                  className="p-1.5 text-sky-600 hover:bg-sky-50 rounded-lg transition"
+                                  title="Edit Pengadaan"
+                                >
+                                  <Icon name="pencil" size={14} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeletePurchase(p.id)}
+                                  className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                  title="Hapus Pengadaan"
+                                >
+                                  <Icon name="trash-2" size={14} />
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>
@@ -6550,6 +6682,131 @@
                   <div className="flex gap-3 pt-2">
                     <button type="button" onClick={() => setShowForm(false)} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl text-sm font-semibold hover:bg-zinc-200 transition">Batal</button>
                     <button type="submit" className="flex-1 py-3 bg-sky-600 text-white rounded-xl text-sm font-semibold hover:bg-sky-700 transition shadow-md flex items-center justify-center gap-1.5"><Icon name="send" size={16} />Kirim Pengajuan</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {editingPurchase && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4 animate-[fadeIn_0.2s]">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-[scaleIn_0.2s]">
+                <div className="p-6 border-b border-zinc-100 flex justify-between items-center bg-zinc-50/50">
+                  <h3 className="font-bold text-zinc-855 text-lg flex items-center gap-2">
+                    <Icon name="shopping-bag" className="text-sky-600" />
+                    <span>Edit Data Pengadaan</span>
+                  </h3>
+                  <button onClick={() => setEditingPurchase(null)} className="p-2 bg-zinc-100 text-zinc-500 hover:bg-zinc-200 rounded-full transition"><Icon name="x" size={16} /></button>
+                </div>
+                <form onSubmit={handleSaveEditPurchase} className="p-6 space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Tipe Pengadaan</label>
+                    <select value={editingPurchase.type} onChange={e => {
+                      setEditingPurchase(prev => ({
+                        ...prev,
+                        type: e.target.value,
+                        productId: e.target.value !== 'buy' ? prev.productId : '',
+                        productName: e.target.value !== 'buy' ? prev.productName : ''
+                      }));
+                    }} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-semibold focus:border-sky-500">
+                      <option value="buy">Pembelian Baru / Restock (Buy)</option>
+                      <option value="refund">Retur ke Supplier (Refund)</option>
+                      <option value="take">Ambil Stok (Ambil Berapa)</option>
+                      <option value="void">Void / Pembatalan Barang (Void)</option>
+                    </select>
+                  </div>
+
+                  {editingPurchase.type !== 'buy' ? (
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Pilih Produk Dari Katalog</label>
+                      <select
+                        value={editingPurchase.productId || ''}
+                        onChange={e => {
+                          const val = e.target.value;
+                          const prod = db.products.find(x => x.id === val);
+                          setEditingPurchase(prev => ({
+                            ...prev,
+                            productId: val,
+                            productName: prod ? prod.name : '',
+                            cost: prod ? String(prod.cost || 0) : ''
+                          }));
+                        }}
+                        className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-medium focus:border-sky-500"
+                        required
+                      >
+                        <option value="">-- Pilih Produk --</option>
+                        {db.products.filter(p => p.active !== false).map(p => (
+                          <option key={p.id} value={p.id}>{p.name} (Stok: {p.stock} | HPP: Rp {p.cost})</option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Sumber Produk</label>
+                        <select
+                          value={editingPurchase.productId || 'new'}
+                          onChange={e => {
+                            const val = e.target.value;
+                            if (val === 'new') {
+                              setEditingPurchase(prev => ({
+                                ...prev,
+                                productId: '',
+                                productName: '',
+                                cost: ''
+                              }));
+                            } else {
+                              const prod = db.products.find(x => x.id === val);
+                              setEditingPurchase(prev => ({
+                                ...prev,
+                                productId: val,
+                                productName: prod ? prod.name : '',
+                                cost: prod ? String(prod.cost || 0) : ''
+                              }));
+                            }
+                          }}
+                          className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-semibold focus:border-sky-500"
+                        >
+                          <option value="new">-- Produk Baru (Ketik Nama Manual) --</option>
+                          {db.products.filter(p => p.active !== false).map(p => (
+                            <option key={p.id} value={p.id}>Restock: {p.name} (Stok: {p.stock} | HPP: Rp {p.cost})</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {!editingPurchase.productId && (
+                        <div>
+                          <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Nama Produk Baru</label>
+                          <input type="text" value={editingPurchase.productName || ''} onChange={e => setEditingPurchase(prev => ({ ...prev, productName: e.target.value }))} required className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-medium focus:border-sky-500" placeholder="Ketik nama produk baru..." />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Supplier / Pemasok</label>
+                    <input type="text" value={editingPurchase.supplierName || ''} onChange={e => setEditingPurchase(prev => ({ ...prev, supplierName: e.target.value }))} required className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-medium focus:border-sky-500" placeholder="Nama supplier/pemasok..." />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Jumlah (Qty)</label>
+                      <input type="number" value={editingPurchase.qty || ''} onChange={e => setEditingPurchase(prev => ({ ...prev, qty: e.target.value }))} required min="1" step="any" className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-medium focus:border-sky-500" placeholder="0" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Harga per Unit (Rp)</label>
+                      <input type="number" value={editingPurchase.cost || ''} onChange={e => setEditingPurchase(prev => ({ ...prev, cost: e.target.value }))} required min="0" className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-medium focus:border-sky-500" placeholder="HPP unit..." />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Catatan / Keterangan</label>
+                    <textarea value={editingPurchase.notes || ''} onChange={e => setEditingPurchase(prev => ({ ...prev, notes: e.target.value }))} rows={3} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-zinc-800 text-sm font-medium focus:border-sky-500" placeholder="Alasan pengadaan atau detail khusus..."></textarea>
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <button type="button" onClick={() => setEditingPurchase(null)} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl text-sm font-semibold hover:bg-zinc-200 transition">Batal</button>
+                    <button type="submit" className="flex-1 py-3 bg-sky-600 text-white rounded-xl text-sm font-semibold hover:bg-sky-700 transition shadow-md flex items-center justify-center gap-1.5"><Icon name="save" size={16} />Simpan Perubahan</button>
                   </div>
                 </form>
               </div>
@@ -7447,6 +7704,12 @@
       const [receiptQty, setReceiptQty] = useState('');
       const [receiptSupplier, setReceiptSupplier] = useState('');
       const [receiptNotes, setReceiptNotes] = useState('');
+      const [receiptProductMode, setReceiptProductMode] = useState('select'); // 'select' | 'custom'
+      const [receiptCustomName, setReceiptCustomName] = useState('');
+      const [receiptCustomCategory, setReceiptCustomCategory] = useState('Makanan');
+      const [receiptCustomCost, setReceiptCustomCost] = useState('');
+      const [receiptCustomPrice, setReceiptCustomPrice] = useState('');
+      const [editingGoodsReceipt, setEditingGoodsReceipt] = useState(null);
 
       // 13. MANAGER TARGET STATES
       const [targetAmount, setTargetAmount] = useState('');
@@ -8244,28 +8507,64 @@
       // --- Gudang Goods Receipt Handlers ---
       const handleAddGoodsReceipt = (e) => {
         e.preventDefault();
-        if (!receiptProduct) {
-          alert('Pilih produk terlebih dahulu');
-          return;
-        }
         const qty = parseFloat(receiptQty) || 0;
         if (qty <= 0) {
           alert('Jumlah barang harus lebih dari 0');
           return;
         }
-        const currentDb = getDB();
-        const prod = currentDb.products.find(p => p.id === receiptProduct);
-        if (!prod) return;
 
-        prod.stock = (prod.stock || 0) + qty;
-        prod.updatedAt = new Date().toISOString();
+        const currentDb = getDB();
+        let prod = null;
+        let pId = receiptProduct;
+        let pName = '';
+        let pSku = '';
+
+        if (receiptProductMode === 'custom') {
+          if (!receiptCustomName) {
+            alert('Ketik nama produk kustom terlebih dahulu');
+            return;
+          }
+          pId = 'p' + Date.now();
+          pName = receiptCustomName;
+          pSku = 'SKU' + Date.now().toString().slice(-6);
+          const newCost = parseFloat(receiptCustomCost) || 0;
+          const newPrice = parseFloat(receiptCustomPrice) || newCost * 1.5;
+
+          prod = {
+            id: pId,
+            sku: pSku,
+            name: pName,
+            category: receiptCustomCategory,
+            price: newPrice,
+            cost: newCost,
+            stock: qty,
+            active: true,
+            minStock: 5,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            createdBy: app.user?.name,
+            createdById: app.user?.id
+          };
+          currentDb.products.push(prod);
+        } else {
+          if (!receiptProduct) {
+            alert('Pilih produk terlebih dahulu');
+            return;
+          }
+          prod = currentDb.products.find(p => p.id === receiptProduct);
+          if (!prod) return;
+          prod.stock = (prod.stock || 0) + qty;
+          prod.updatedAt = new Date().toISOString();
+          pName = prod.name;
+          pSku = prod.sku || '';
+        }
 
         currentDb.stockLedger = currentDb.stockLedger || [];
         currentDb.stockLedger.push({
           id: 'LDG' + Date.now(),
-          productId: prod.id,
-          productName: prod.name,
-          sku: prod.sku || '',
+          productId: pId,
+          productName: pName,
+          sku: pSku,
           date: new Date().toISOString(),
           type: 'Penerimaan Barang',
           qty: qty,
@@ -8275,9 +8574,9 @@
         currentDb.goodsReceipts = currentDb.goodsReceipts || [];
         currentDb.goodsReceipts.push({
           id: 'GRC' + Date.now(),
-          productId: prod.id,
-          productName: prod.name,
-          sku: prod.sku || '',
+          productId: pId,
+          productName: pName,
+          sku: pSku,
           qty: qty,
           supplier: receiptSupplier,
           notes: receiptNotes,
@@ -8286,7 +8585,7 @@
           receivedBy: app.user?.name
         });
 
-        logAuditAction('Terima Barang Masuk', `Gudang menerima ${qty} pcs "${prod.name}" dari ${receiptSupplier}`, app.user);
+        logAuditAction('Terima Barang Masuk', `Gudang menerima ${qty} pcs "${pName}" dari ${receiptSupplier}`, app.user);
         saveDB(currentDb);
         app.refreshDB();
 
@@ -8294,7 +8593,99 @@
         setReceiptQty('');
         setReceiptSupplier('');
         setReceiptNotes('');
+        setReceiptCustomName('');
+        setReceiptCustomCost('');
+        setReceiptCustomPrice('');
+        setReceiptProductMode('select');
         app.addToast('Barang masuk diterima & stok produk bertambah', 'success');
+      };
+
+      const handleDeleteGoodsReceipt = (id) => {
+        if (!confirm('Apakah Anda yakin ingin menghapus catatan penerimaan barang ini? Stok produk akan dikurangi kembali.')) return;
+        const currentDb = getDB();
+        const idx = currentDb.goodsReceipts.findIndex(r => r.id === id);
+        if (idx !== -1) {
+          const r = currentDb.goodsReceipts[idx];
+          
+          const prod = currentDb.products.find(p => p.id === r.productId || p.name.toLowerCase() === r.productName.toLowerCase());
+          if (prod) {
+            prod.stock = Math.max(0, parseFloat((prod.stock - r.qty).toFixed(3)));
+            prod.updatedAt = new Date().toISOString();
+          }
+
+          currentDb.goodsReceipts.splice(idx, 1);
+          logAuditAction('Hapus Penerimaan Barang', `Menghapus penerimaan barang "${r.productName}" (${r.id})`, app.user);
+          saveDB(currentDb);
+          app.refreshDB();
+          app.addToast('Penerimaan barang berhasil dihapus', 'success');
+        }
+      };
+
+      const handleSaveEditGoodsReceipt = (e) => {
+        e.preventDefault();
+        const currentDb = getDB();
+        const idx = currentDb.goodsReceipts.findIndex(r => r.id === editingGoodsReceipt.id);
+        if (idx !== -1) {
+          const oldR = currentDb.goodsReceipts[idx];
+          
+          let pId = editingGoodsReceipt.productId;
+          let pName = editingGoodsReceipt.productName;
+          let pSku = editingGoodsReceipt.sku;
+
+          if (editingGoodsReceipt.productMode === 'custom') {
+            pId = 'p' + Date.now();
+            pName = editingGoodsReceipt.customName;
+            pSku = 'SKU' + Date.now().toString().slice(-6);
+            const newCost = parseFloat(editingGoodsReceipt.customCost) || 0;
+            const newPrice = parseFloat(editingGoodsReceipt.customPrice) || newCost * 1.5;
+
+            const newProd = {
+              id: pId,
+              sku: pSku,
+              name: pName,
+              category: editingGoodsReceipt.customCategory,
+              price: newPrice,
+              cost: newCost,
+              stock: parseFloat(editingGoodsReceipt.qty) || 0,
+              active: true,
+              minStock: 5,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              createdBy: app.user?.name,
+              createdById: app.user?.id
+            };
+            currentDb.products.push(newProd);
+          }
+
+          const oldQty = oldR.qty;
+          const newQty = parseFloat(editingGoodsReceipt.qty) || 0;
+
+          const oldProd = currentDb.products.find(p => p.id === oldR.productId || p.name.toLowerCase() === oldR.productName.toLowerCase());
+          if (oldProd) {
+            oldProd.stock = Math.max(0, parseFloat((oldProd.stock - oldQty).toFixed(3)));
+            oldProd.updatedAt = new Date().toISOString();
+          }
+
+          const newProd = currentDb.products.find(p => p.id === pId || p.name.toLowerCase() === pName.toLowerCase());
+          if (newProd) {
+            newProd.stock = parseFloat((newProd.stock + newQty).toFixed(3));
+            newProd.updatedAt = new Date().toISOString();
+          }
+
+          oldR.productId = pId;
+          oldR.productName = pName;
+          oldR.sku = pSku;
+          oldR.qty = newQty;
+          oldR.supplier = editingGoodsReceipt.supplier;
+          oldR.notes = editingGoodsReceipt.notes;
+          oldR.updatedAt = new Date().toISOString();
+
+          logAuditAction('Edit Penerimaan Barang', `Mengedit penerimaan barang "${pName}" (${editingGoodsReceipt.id})`, app.user);
+          saveDB(currentDb);
+          app.refreshDB();
+          setEditingGoodsReceipt(null);
+          app.addToast('Penerimaan barang berhasil diperbarui', 'success');
+        }
       };
 
       // --- Manager Target Handlers ---
@@ -8381,7 +8772,8 @@
         app.addToast('Catatan serah terima shift disimpan', 'success');
       };
 
-      // ==================== RENDERING SUB-WORKSPACES       const renderPettyCashView = () => {
+      // ==================== RENDERING SUB-WORKSPACES
+      const renderPettyCashView = () => {
         const pettyList = db.pettyCash || [];
         const totalPettyIn = pettyList.filter(x => x.type === 'in').reduce((acc, x) => acc + x.amount, 0);
         const totalPettyOut = pettyList.filter(x => x.type === 'out').reduce((acc, x) => acc + x.amount, 0);
@@ -10901,19 +11293,87 @@
                   <h4 className="font-bold text-zinc-800 text-sm mb-4">Penerimaan Barang Supplier</h4>
                   <form onSubmit={handleAddGoodsReceipt} className="space-y-4">
                     <div>
-                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Pilih Produk</label>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Sumber Produk</label>
                       <select
-                        value={receiptProduct}
-                        onChange={e => setReceiptProduct(e.target.value)}
-                        required
-                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white"
+                        value={receiptProductMode}
+                        onChange={e => {
+                          setReceiptProductMode(e.target.value);
+                          setReceiptProduct('');
+                          setReceiptCustomName('');
+                        }}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
                       >
-                        <option value="">-- Pilih Produk --</option>
-                        {db.products.filter(p => p.active !== false).map(p => (
-                          <option key={p.id} value={p.id}>{p.name} (Stok saat ini: {p.stock} pcs)</option>
-                        ))}
+                        <option value="select">-- Pilih dari Katalog --</option>
+                        <option value="custom">-- Ketik Manual (Produk Baru) --</option>
                       </select>
                     </div>
+
+                    {receiptProductMode === 'select' ? (
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Pilih Produk</label>
+                        <select
+                          value={receiptProduct}
+                          onChange={e => setReceiptProduct(e.target.value)}
+                          required
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white"
+                        >
+                          <option value="">-- Pilih Produk --</option>
+                          {db.products.filter(p => p.active !== false).map(p => (
+                            <option key={p.id} value={p.id}>{p.name} (Stok saat ini: {p.stock} pcs)</option>
+                          )}
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Nama Produk Baru</label>
+                          <input
+                            type="text"
+                            value={receiptCustomName}
+                            onChange={e => setReceiptCustomName(e.target.value)}
+                            required
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                            placeholder="Ketik nama produk baru..."
+                          />
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div className="col-span-2">
+                            <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Kategori</label>
+                            <select
+                              value={receiptCustomCategory}
+                              onChange={e => setReceiptCustomCategory(e.target.value)}
+                              className="w-full px-2 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-xs focus:bg-white font-semibold"
+                            >
+                              {db.categories.map(cat => (
+                                <option key={cat} value={cat}>{cat}</option>
+                              )}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Modal (HPP)</label>
+                            <input
+                              type="number"
+                              value={receiptCustomCost}
+                              onChange={e => setReceiptCustomCost(e.target.value)}
+                              required
+                              className="w-full px-2 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-xs focus:bg-white font-mono"
+                              placeholder="0"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Harga Jual POS (Rp)</label>
+                          <input
+                            type="number"
+                            value={receiptCustomPrice}
+                            onChange={e => setReceiptCustomPrice(e.target.value)}
+                            required
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-mono"
+                            placeholder="0"
+                          />
+                        </div>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Jumlah Masuk (Qty)</label>
@@ -10970,6 +11430,7 @@
                           <th className="p-3 text-left">Pemasok / Supplier</th>
                           <th className="p-3 text-left">Catatan</th>
                           <th className="p-3 text-right">Penerima</th>
+                          <th className="p-3 text-right">Aksi</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-100">
@@ -10981,11 +11442,36 @@
                             <td className="p-3 font-bold text-zinc-700">{item.supplier}</td>
                             <td className="p-3 text-zinc-500 italic">{item.notes || '-'}</td>
                             <td className="p-3 text-right text-zinc-650 font-semibold">{item.receivedBy}</td>
+                            <td className="p-3 text-right">
+                              <div className="flex justify-end gap-1">
+                                <button
+                                  onClick={() => setEditingGoodsReceipt({
+                                    ...item,
+                                    productMode: 'select',
+                                    customName: '',
+                                    customCategory: 'Makanan',
+                                    customCost: '',
+                                    customPrice: ''
+                                  })}
+                                  className="p-1 text-sky-600 hover:bg-sky-50 rounded"
+                                  title="Edit"
+                                >
+                                  <Icon name="pencil" size={12} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteGoodsReceipt(item.id)}
+                                  className="p-1 text-rose-600 hover:bg-rose-50 rounded"
+                                  title="Hapus"
+                                >
+                                  <Icon name="trash-2" size={12} />
+                                </button>
+                              </div>
+                            </td>
                           </tr>
-                        ))}
+                        )}
                         {(db.goodsReceipts || []).length === 0 && (
                           <tr>
-                            <td colSpan="6" className="text-center p-8 text-zinc-400">
+                            <td colSpan="8" className="text-center p-8 text-zinc-400">
                               Belum ada log penerimaan barang masuk.
                             </td>
                           </tr>
@@ -11169,6 +11655,172 @@
                       </tbody>
                     </table>
                   </div>
+                </div>
+              </div>
+            {editingGoodsReceipt && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-[scaleIn_0.2s_ease-out]">
+                  <div className="p-6 border-b border-zinc-150 flex justify-between items-center bg-zinc-50/50">
+                    <h3 className="font-bold text-zinc-800 text-base">Edit Log Penerimaan Barang</h3>
+                    <button onClick={() => setEditingGoodsReceipt(null)} className="p-2 bg-white border border-zinc-200 hover:bg-zinc-100 rounded-full transition"><Icon name="x" size={16} /></button>
+                  </div>
+                  <form onSubmit={handleSaveEditGoodsReceipt} className="p-6 space-y-4 text-left">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Sumber Produk</label>
+                      <select
+                        value={editingGoodsReceipt.productMode}
+                        onChange={e => {
+                          const mode = e.target.value;
+                          setEditingGoodsReceipt(prev => ({
+                            ...prev,
+                            productMode: mode,
+                            productId: mode !== 'custom' ? prev.productId : '',
+                            productName: mode !== 'custom' ? prev.productName : ''
+                          }));
+                        }}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                      >
+                        <option value="select">-- Pilih dari Katalog --</option>
+                        <option value="custom">-- Ketik Manual (Produk Baru) --</option>
+                      </select>
+                    </div>
+
+                    {editingGoodsReceipt.productMode === 'select' ? (
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Pilih Produk</label>
+                        <select
+                          value={editingGoodsReceipt.productId || ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            const prod = db.products.find(x => x.id === val);
+                            setEditingGoodsReceipt(prev => ({
+                              ...prev,
+                              productId: val,
+                              productName: prod ? prod.name : '',
+                              sku: prod ? (prod.sku || '') : ''
+                            }));
+                          }}
+                          required
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                        >
+                          <option value="">-- Pilih Produk --</option>
+                          {db.products.filter(p => p.active !== false).map(p => (
+                            <option key={p.id} value={p.id}>{p.name} (Stok: {p.stock})</option>
+                          )}
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Nama Produk Baru</label>
+                          <input
+                            type="text"
+                            value={editingGoodsReceipt.customName || ''}
+                            onChange={e => {
+                              const name = e.target.value;
+                              setEditingGoodsReceipt(prev => ({ ...prev, customName: name }));
+                            }}
+                            required
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                            placeholder="Nama produk baru..."
+                          />
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div className="col-span-2">
+                            <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Kategori</label>
+                            <select
+                              value={editingGoodsReceipt.customCategory || 'Makanan'}
+                              onChange={e => {
+                                const cat = e.target.value;
+                                setEditingGoodsReceipt(prev => ({ ...prev, customCategory: cat }));
+                              }}
+                              className="w-full px-2 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-xs focus:bg-white font-semibold"
+                            >
+                              {db.categories.map(cat => (
+                                <option key={cat} value={cat}>{cat}</option>
+                              )}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Modal</label>
+                            <input
+                              type="number"
+                              value={editingGoodsReceipt.customCost || ''}
+                              onChange={e => {
+                                const cost = e.target.value;
+                                setEditingGoodsReceipt(prev => ({ ...prev, customCost: cost }));
+                              }}
+                              required
+                              className="w-full px-2 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-xs focus:bg-white font-mono"
+                              placeholder="0"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Harga Jual (Rp)</label>
+                          <input
+                            type="number"
+                            value={editingGoodsReceipt.customPrice || ''}
+                            onChange={e => {
+                              const price = e.target.value;
+                              setEditingGoodsReceipt(prev => ({ ...prev, customPrice: price }));
+                            }}
+                            required
+                            className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-mono"
+                            placeholder="0"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Jumlah Masuk</label>
+                        <input
+                          type="number"
+                          value={editingGoodsReceipt.qty || ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setEditingGoodsReceipt(prev => ({ ...prev, qty: val }));
+                          }}
+                          required
+                          min="1"
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Supplier</label>
+                        <input
+                          type="text"
+                          value={editingGoodsReceipt.supplier || ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setEditingGoodsReceipt(prev => ({ ...prev, supplier: val }));
+                          }}
+                          required
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Catatan</label>
+                      <input
+                        type="text"
+                        value={editingGoodsReceipt.notes || ''}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setEditingGoodsReceipt(prev => ({ ...prev, notes: val }));
+                        }}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white"
+                      />
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                      <button type="button" onClick={() => setEditingGoodsReceipt(null)} className="flex-1 py-2.5 bg-zinc-100 text-zinc-700 rounded-xl text-xs font-bold hover:bg-zinc-200 transition">Batal</button>
+                      <button type="submit" className="flex-1 py-2.5 bg-sky-600 text-white rounded-xl text-xs font-bold hover:bg-sky-700 transition">Simpan</button>
+                    </div>
+                  </form>
                 </div>
               </div>
             )}
