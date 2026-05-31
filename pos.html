@@ -39,7 +39,12 @@
       console.error = function() {
         var args = Array.prototype.slice.call(arguments);
         originalError.apply(console, args);
-        showDiagnostics(args.join(' '), 'Console Error');
+        var msg = args.join(' ');
+        // Abaikan peringatan deoptimisasi Babel karena itu bukan error eksekusi asli
+        if (msg.indexOf('deoptimised') !== -1 || msg.indexOf('500KB') !== -1 || msg.indexOf('[BABEL]') !== -1) {
+          return;
+        }
+        showDiagnostics(msg, 'Console Error');
       };
     })();
 
@@ -274,6 +279,14 @@
         parsed.promoCoupons = parsed.promoCoupons || [];
         parsed.stockLedger = parsed.stockLedger || [];
         parsed.damagedGoods = parsed.damagedGoods || [];
+        parsed.productBundles = parsed.productBundles || [];
+        parsed.goodsReceipts = parsed.goodsReceipts || [];
+        parsed.shopIncidents = parsed.shopIncidents || [];
+        parsed.handovers = parsed.handovers || [];
+        parsed.pettyCash = parsed.pettyCash || [];
+        parsed.taxRecords = parsed.taxRecords || [];
+        parsed.staffKPI = parsed.staffKPI || [];
+        parsed.salesTargets = parsed.salesTargets || { target: 50000000, month: new Date().toISOString().slice(0, 7) };
 
         // Always filter out permanently deleted users (tombstone enforcement)
         if (parsed.deletedUserIds.length > 0) {
@@ -1729,10 +1742,233 @@
       const app = useContext(AppContext);
       const db = getDB();
       const [filter, setFilter] = useState('7days');
-      const [dashboardTab, setDashboardTab] = useState('overview'); // 'overview', 'staff', 'finance', 'audit'
+      const [dashboardTab, setDashboardTab] = useState('overview'); // 'overview', 'staff', 'finance', 'audit', 'approvals'
       const [selectedStaffDetail, setSelectedStaffDetail] = useState(null);
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
+
+      const handleApproveRequest = (req) => {
+        const currentDb = getDB();
+        const nowStr = new Date().toISOString();
+        
+        const reqIdx = currentDb.adminApprovals.findIndex(r => r.id === req.id);
+        if (reqIdx === -1) return;
+        currentDb.adminApprovals[reqIdx].status = 'approved';
+        currentDb.adminApprovals[reqIdx].updatedAt = nowStr;
+
+        if (req.type === 'transaction_delete') {
+          const txIdx = currentDb.transactions.findIndex(t => t.id === req.targetId);
+          if (txIdx !== -1) {
+            const tx = currentDb.transactions[txIdx];
+            tx.items.forEach(item => {
+              const prod = currentDb.products.find(p => p.id === item.id);
+              if (prod) {
+                prod.stock += item.qty;
+                prod.updatedAt = nowStr;
+              }
+            });
+            tx.deleted = true;
+            tx.updatedAt = nowStr;
+            logAuditAction('Persetujuan Hapus Transaksi', `Owner menyetujui penghapusan transaksi ${req.targetId} oleh ${req.requesterName}`, app.user);
+          }
+        } 
+        else if (req.type === 'transaction_edit') {
+          const txIdx = currentDb.transactions.findIndex(t => t.id === req.targetId);
+          if (txIdx !== -1) {
+            const originalTx = currentDb.transactions[txIdx];
+            const editData = req.data;
+
+            originalTx.items.forEach(oldItem => {
+              const prod = currentDb.products.find(p => p.id === oldItem.id);
+              if (prod) {
+                prod.stock += oldItem.qty;
+              }
+            });
+
+            editData.items.forEach(newItem => {
+              const prod = currentDb.products.find(p => p.id === newItem.id);
+              if (prod) {
+                prod.stock -= newItem.qty;
+                prod.updatedAt = nowStr;
+              }
+            });
+
+            originalTx.cashier = editData.cashier;
+            originalTx.method = editData.method;
+            originalTx.discount = editData.discount;
+            originalTx.items = editData.items;
+            originalTx.subtotal = editData.subtotal;
+            originalTx.total = editData.total;
+            originalTx.updatedAt = nowStr;
+            logAuditAction('Persetujuan Edit Transaksi', `Owner menyetujui edit transaksi ${req.targetId} oleh ${req.requesterName}`, app.user);
+          }
+        } 
+        else if (req.type === 'shift_add') {
+          const shiftData = req.data;
+          const newShift = {
+            id: 'SF' + Date.now(),
+            cashierId: req.requesterId,
+            cashierName: req.requesterName,
+            startTime: shiftData.startTime,
+            endTime: shiftData.endTime,
+            startCash: shiftData.startCash,
+            expectedCash: shiftData.expectedCash,
+            actualCash: shiftData.actualCash,
+            difference: shiftData.actualCash - shiftData.expectedCash,
+            status: 'closed',
+            updatedAt: nowStr
+          };
+          currentDb.shifts.push(newShift);
+          logAuditAction('Persetujuan Tambah Shift', `Owner menyetujui penambahan shift oleh ${req.requesterName}`, app.user);
+        } 
+        else if (req.type === 'shift_edit') {
+          const shiftIdx = currentDb.shifts.findIndex(s => s.id === req.targetId);
+          if (shiftIdx !== -1) {
+            const shiftData = req.data;
+            const expected = currentDb.shifts[shiftIdx].expectedCash;
+            currentDb.shifts[shiftIdx] = {
+              ...currentDb.shifts[shiftIdx],
+              ...shiftData,
+              difference: shiftData.actualCash - expected,
+              updatedAt: nowStr
+            };
+            logAuditAction('Persetujuan Edit Shift', `Owner menyetujui pembaruan shift ${req.targetId} oleh ${req.requesterName}`, app.user);
+          }
+        } 
+        else if (req.type === 'shift_delete') {
+          const shiftIdx = currentDb.shifts.findIndex(s => s.id === req.targetId);
+          if (shiftIdx !== -1) {
+            currentDb.shifts.splice(shiftIdx, 1);
+            logAuditAction('Persetujuan Hapus Shift', `Owner menyetujui penghapusan shift ${req.targetId} oleh ${req.requesterName}`, app.user);
+          }
+        }
+
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Pengajuan disetujui dan dieksekusi', 'success');
+      };
+
+      const handleRejectRequest = (req) => {
+        const currentDb = getDB();
+        const reqIdx = currentDb.adminApprovals.findIndex(r => r.id === req.id);
+        if (reqIdx === -1) return;
+        currentDb.adminApprovals[reqIdx].status = 'rejected';
+        currentDb.adminApprovals[reqIdx].updatedAt = new Date().toISOString();
+        
+        logAuditAction('Penolakan Pengajuan', `Owner menolak pengajuan ${req.type} oleh ${req.requesterName}`, app.user);
+        
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Pengajuan ditolak', 'info');
+      };
+
+      const renderApprovals = () => {
+        const approvals = (db.adminApprovals || []).sort((a, b) => {
+          if (a.status === 'pending' && b.status !== 'pending') return -1;
+          if (a.status !== 'pending' && b.status === 'pending') return 1;
+          return new Date(b.createdAt) - new Date(a.createdAt);
+        });
+
+        return (
+          <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm space-y-4 text-left">
+            <div className="flex justify-between items-center pb-3 border-b border-zinc-150">
+              <h4 className="font-bold text-zinc-800 text-sm">Pengajuan Modifikasi Laporan & Shift ({approvals.filter(r => r.status === 'pending').length} Pending)</h4>
+              <p className="text-xs text-zinc-400">Verifikasi alasan & lakukan otorisasi</p>
+            </div>
+            
+            <div className="space-y-4">
+              {approvals.map(req => {
+                const date = new Date(req.createdAt).toLocaleString('id-ID');
+                let badgeClass = 'bg-zinc-100 text-zinc-650';
+                let label = req.type;
+                if (req.type === 'transaction_delete') {
+                  badgeClass = 'bg-rose-50 border border-rose-200 text-rose-600';
+                  label = `Hapus Transaksi ${req.targetId}`;
+                } else if (req.type === 'transaction_edit') {
+                  badgeClass = 'bg-sky-50 border border-sky-200 text-sky-700';
+                  label = `Edit Transaksi ${req.targetId}`;
+                } else if (req.type === 'shift_add') {
+                  badgeClass = 'bg-emerald-50 border border-emerald-200 text-emerald-600';
+                  label = 'Tambah Shift';
+                } else if (req.type === 'shift_edit') {
+                  badgeClass = 'bg-sky-50 border border-sky-200 text-sky-700';
+                  label = `Edit Shift ${req.targetId}`;
+                } else if (req.type === 'shift_delete') {
+                  badgeClass = 'bg-rose-50 border border-rose-200 text-rose-600';
+                  label = `Hapus Shift ${req.targetId}`;
+                }
+
+                return (
+                  <div key={req.id} className="p-4 bg-zinc-50 border border-zinc-150 rounded-xl space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold ${badgeClass}`}>{label}</span>
+                          <span className="text-[10px] text-zinc-400 font-mono">{date}</span>
+                        </div>
+                        <p className="text-xs font-bold text-zinc-800 mt-1">Diajukan oleh: {req.requesterName} <span className="text-zinc-400 capitalize">({req.requesterRole})</span></p>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        {req.status === 'pending' ? (
+                          <>
+                            <button 
+                              onClick={() => handleApproveRequest(req)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-sm"
+                            >
+                              <Icon name="check" size={12} /> Setujui
+                            </button>
+                            <button 
+                              onClick={() => handleRejectRequest(req)}
+                              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-sm"
+                            >
+                              <Icon name="x" size={12} /> Tolak
+                            </button>
+                          </>
+                        ) : (
+                          <span className={`px-2.5 py-1 rounded text-xs font-bold ${req.status === 'approved' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-750'}`}>
+                            {req.status === 'approved' ? 'Disetujui' : 'Ditolak'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-3 rounded-lg border border-zinc-200 text-xs italic text-zinc-650 font-medium">
+                      <strong>Alasan/Deskripsi:</strong> &ldquo;{req.reason}&rdquo;
+                    </div>
+
+                    {req.data && (
+                      <div className="bg-zinc-100/50 p-3 rounded-lg border border-zinc-200 text-xs space-y-1.5">
+                        <p className="font-bold text-zinc-700">Detail Perubahan yang Diajukan:</p>
+                        {req.type === 'transaction_edit' && (
+                          <div className="space-y-1 font-mono text-[10px] text-zinc-650">
+                            <div>Kasir: {req.data.cashier} | Metode: {req.data.method.toUpperCase()} | Total Baru: Rp {req.data.total?.toLocaleString('id-ID')}</div>
+                            <div>Item:</div>
+                            {req.data.items.map((it, idx) => (
+                              <div key={idx} className="pl-2.5">• {it.name} ({it.qty}x) @ Rp {it.effectivePrice?.toLocaleString('id-ID')}</div>
+                            ))}
+                          </div>
+                        )}
+                        {(req.type === 'shift_add' || req.type === 'shift_edit') && (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-[10px] text-zinc-650">
+                            <div>Mulai: {new Date(req.data.startTime).toLocaleTimeString('id-ID')}</div>
+                            <div>Selesai: {new Date(req.data.endTime).toLocaleTimeString('id-ID')}</div>
+                            <div>Modal: Rp {req.data.startCash?.toLocaleString('id-ID')}</div>
+                            <div>Laci Fisik: Rp {req.data.actualCash?.toLocaleString('id-ID')}</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {approvals.length === 0 && (
+                <p className="text-center py-8 text-zinc-400 text-xs">Belum ada pengajuan masuk.</p>
+              )}
+            </div>
+          </div>
+        );
+      };
 
       const allTx = useMemo(() => db.transactions || [], [db.transactions, app.dbVersion]);
 
@@ -2341,12 +2577,16 @@
             <button onClick={() => setDashboardTab('audit')} className={`pb-3 transition ${dashboardTab === 'audit' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
               Log Audit Lengkap
             </button>
+            <button onClick={() => setDashboardTab('approvals')} className={`pb-3 transition ${dashboardTab === 'approvals' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
+              Persetujuan Admin
+            </button>
           </div>
 
           {dashboardTab === 'overview' && renderOverview()}
           {dashboardTab === 'staff' && renderStaffTracking()}
           {dashboardTab === 'finance' && renderFinance()}
           {dashboardTab === 'audit' && renderFullAuditLogs()}
+          {dashboardTab === 'approvals' && renderApprovals()}
 
         </div>
       );
@@ -4162,10 +4402,12 @@
                       {p.image ? (
                         <img src={p.image} className="w-10 h-10 rounded-lg object-cover border border-zinc-200" />
                       ) : (
-                         <div className="w-10 h-10 bg-sky-100 text-sky-600 rounded-lg flex items-center justify-center font-bold">{p.name.substring(0,2).toUpperCase()}</div>
+                         <div className="w-10 h-10 bg-zinc-50 border border-zinc-200 text-zinc-400 rounded-xl flex flex-col items-center justify-center font-bold">
+                           <Icon name="package" size={15} className="text-zinc-300" />
+                         </div>
                       )}
                       <div>
-                        <div className="font-semibold text-zinc-800">{p.name}</div>
+                        <div className="font-semibold text-zinc-800 text-sm">{p.name}</div>
                         <div className="text-xs text-zinc-500 font-mono mt-0.5">{p.sku}</div>
                         <div className="text-[10px] text-zinc-400 mt-2 flex items-center gap-1 font-medium">
                           <Icon name="clock" size={10} />
@@ -4173,19 +4415,19 @@
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-zinc-600 text-left">
-                      <span className="bg-zinc-100 px-3 py-1 rounded-full text-xs font-medium">{p.category}</span>
+                    <td className="px-6 py-4 text-sm text-zinc-650 text-left">
+                      <span className="bg-zinc-50 border border-zinc-150 px-2 py-0.5 rounded-lg text-xs font-medium text-zinc-650">{p.category}</span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-right font-bold text-zinc-700">Rp {p.price.toLocaleString('id-ID')}</td>
+                    <td className="px-6 py-4 text-sm text-right font-bold text-zinc-800">Rp {p.price.toLocaleString('id-ID')}</td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold ${p.stock <= 5 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-bold border ${p.stock <= 5 ? 'bg-rose-50 border-rose-150 text-rose-600' : 'bg-emerald-50 border-emerald-150 text-emerald-600'}`}>
                         {p.stock}
                       </span>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex justify-center gap-2">
-                        <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 text-sky-600 bg-sky-50 hover:bg-sky-100 rounded-lg transition"><Icon name="edit" size={16} /></button>
-                        <button onClick={() => handleDelete(p.id)} className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition"><Icon name="trash-2" size={16} /></button>
+                        <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Edit"><Icon name="edit" size={14} /></button>
+                        <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition" title="Hapus"><Icon name="trash-2" size={14} /></button>
                       </div>
                     </td>
                   </tr>
@@ -4202,12 +4444,14 @@
                   {p.image ? (
                      <img src={p.image} className="w-14 h-14 rounded-xl object-cover border border-zinc-200" />
                   ) : (
-                     <div className="w-14 h-14 bg-sky-100 text-sky-600 rounded-xl flex items-center justify-center font-bold text-xl flex-shrink-0">{p.name.substring(0,2).toUpperCase()}</div>
+                     <div className="w-14 h-14 bg-zinc-50 border border-zinc-200 text-zinc-400 rounded-xl flex flex-col items-center justify-center font-bold flex-shrink-0">
+                       <Icon name="package" size={20} className="text-zinc-300" />
+                     </div>
                   )}
                   <div className="flex-1">
-                    <h4 className="font-bold text-zinc-800 leading-tight">{p.name}</h4>
+                    <h4 className="font-bold text-zinc-800 leading-tight text-sm">{p.name}</h4>
                     <p className="text-xs text-zinc-500 font-mono mt-1">{p.sku}</p>
-                    <span className="inline-block bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded text-[10px] font-medium mt-1">{p.category}</span>
+                    <span className="inline-block bg-zinc-50 border border-zinc-150 text-zinc-600 px-2 py-0.5 rounded text-[10px] font-medium mt-1">{p.category}</span>
                     <p className="text-[10px] text-zinc-400 mt-2 flex items-center gap-1 font-medium">
                       <Icon name="clock" size={10} />
                       <span>Update: {formatTimeAgo(p.updatedAt)}</span>
@@ -4218,14 +4462,14 @@
                   <div className="text-left">
                     <p className="text-xs text-zinc-500 mb-0.5">Harga & Stok</p>
                     <div className="flex items-center gap-2">
-                       <span className="font-bold text-sky-600">Rp {p.price.toLocaleString('id-ID')}</span>
+                       <span className="font-bold text-zinc-800">Rp {p.price.toLocaleString('id-ID')}</span>
                        <span className="text-zinc-300">•</span>
                        <span className={`text-xs font-bold ${p.stock <= 5 ? 'text-rose-500' : 'text-emerald-600'}`}>{p.stock} item</span>
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2.5 bg-zinc-100 text-zinc-700 rounded-xl"><Icon name="edit" size={18} /></button>
-                    <button onClick={() => handleDelete(p.id)} className="p-2.5 bg-rose-50 text-rose-600 rounded-xl"><Icon name="trash-2" size={18} /></button>
+                    <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition"><Icon name="edit" size={14} /></button>
+                    <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition"><Icon name="trash-2" size={14} /></button>
                   </div>
                 </div>
               </div>
@@ -4399,6 +4643,7 @@
       const [method, setMethod] = useState(tx.method || 'cash');
       const [discount, setDiscount] = useState(tx.discount || 0);
       const [items, setItems] = useState(JSON.parse(JSON.stringify(tx.items))); // deep clone
+      const [showReason, setShowReason] = useState(false);
       
       const subtotal = items.reduce((s, i) => s + i.price * i.qty, 0);
       const total = subtotal - discount;
@@ -4436,6 +4681,26 @@
 
       const handleSave = () => {
         const db = getDB();
+        if (app.user?.role !== 'owner') {
+          // Verify stock first
+          let stockOk = true;
+          let failedProd = '';
+          items.forEach(newItem => {
+            const prod = db.products.find(p => p.id === newItem.id);
+            const oldQty = tx.items.find(i => i.id === newItem.id)?.qty || 0;
+            const diff = newItem.qty - oldQty;
+            if (prod && diff > 0 && prod.stock < diff) {
+              stockOk = false;
+              failedProd = prod.name;
+            }
+          });
+          if (!stockOk) {
+            app.addToast(`Stok ${failedProd} tidak mencukupi`, 'error');
+            return;
+          }
+          setShowReason(true);
+          return;
+        }
         const txIdx = db.transactions.findIndex(t => t.id === tx.id);
         if (txIdx === -1) return;
 
@@ -4585,6 +4850,77 @@
               <button type="button" onClick={handleSave} className="flex-1 py-3 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition shadow-md">Simpan Perubahan</button>
             </div>
           </div>
+          {showReason && (
+            <ReasonModal
+              isOpen={showReason}
+              onClose={() => setShowReason(false)}
+              title="Pengajuan Edit Transaksi"
+              onSubmit={(reason) => {
+                const currentDb = getDB();
+                const newApproval = {
+                  id: 'AP' + Date.now(),
+                  requesterId: app.user.id,
+                  requesterName: app.user.name,
+                  requesterRole: app.user.role,
+                  type: 'transaction_edit',
+                  targetId: tx.id,
+                  reason: reason.trim(),
+                  data: {
+                    cashier,
+                    method,
+                    discount,
+                    items,
+                    subtotal,
+                    total
+                  },
+                  status: 'pending',
+                  createdAt: new Date().toISOString()
+                };
+                currentDb.adminApprovals.push(newApproval);
+                saveDB(currentDb);
+                app.refreshDB();
+                app.addToast('Pengajuan edit transaksi berhasil dikirim ke Owner', 'success');
+                setShowReason(false);
+                onClose();
+              }}
+            />
+          )}
+        </div>
+      );
+    }
+
+    function ReasonModal({ isOpen, onClose, onSubmit, title }) {
+      const [reason, setReason] = useState('');
+      if (!isOpen) return null;
+      return (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl p-6 text-left border border-zinc-150 animate-[scaleIn_0.2s_ease-out]">
+            <h3 className="text-base font-bold text-zinc-900 mb-2">{title || 'Alasan Pengajuan'}</h3>
+            <p className="text-xs text-zinc-500 mb-4">Aksi modifikasi laporan oleh Admin memerlukan persetujuan dari Owner. Silakan tulis deskripsi/alasan pengajuan Anda.</p>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="Tulis alasan atau deskripsi pengajuan di sini..."
+              className="w-full h-24 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:border-zinc-500 focus:bg-white text-xs font-semibold resize-none mb-4"
+            />
+            <div className="flex gap-3">
+              <button onClick={onClose} type="button" className="flex-1 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold rounded-xl text-xs transition">Batal</button>
+              <button 
+                onClick={() => {
+                  if (!reason.trim()) {
+                    alert('Harap isi alasan pengajuan');
+                    return;
+                  }
+                  onSubmit(reason);
+                  setReason('');
+                }} 
+                type="button"
+                className="flex-1 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-xl text-xs transition"
+              >
+                Kirim Pengajuan
+              </button>
+            </div>
+          </div>
         </div>
       );
     }
@@ -4605,9 +4941,10 @@
 
       // Shift CRUD state
       const [showShiftModal, setShowShiftModal] = useState(null);
+      const [approvalPrompt, setApprovalPrompt] = useState(null);
 
       const handleEditClick = (tx) => {
-        if (['admin', 'owner'].includes(app.user?.role)) {
+        if (['admin', 'owner', 'manager', 'keuangan'].includes(app.user?.role)) {
           setEditTx(tx);
         } else {
           setAuthAction('edit');
@@ -4617,8 +4954,14 @@
       };
 
       const handleDeleteClick = (tx) => {
-        if (['admin', 'owner'].includes(app.user?.role)) {
+        if (app.user?.role === 'owner') {
           handleDeleteTransaction(tx.id);
+        } else if (['admin', 'owner', 'manager', 'keuangan'].includes(app.user?.role)) {
+          setApprovalPrompt({
+            type: 'transaction_delete',
+            targetId: tx.id,
+            title: 'Pengajuan Hapus Transaksi'
+          });
         } else {
           setAuthAction('delete');
           setTargetTx(tx);
@@ -4627,41 +4970,50 @@
       };
 
       const handleSaveShift = (shiftData) => {
-        const db = getDB();
-        const nowStr = new Date().toISOString();
-        if (showShiftModal.mode === 'add') {
-          const newShift = {
-            id: 'SF' + Date.now(),
-            cashierId: app.user?.id || 'u2',
-            cashierName: app.user?.name || 'Kasir',
-            startTime: shiftData.startTime || nowStr,
-            endTime: shiftData.endTime || nowStr,
-            startCash: shiftData.startCash || 0,
-            expectedCash: shiftData.expectedCash || 0,
-            actualCash: shiftData.actualCash || 0,
-            difference: (shiftData.actualCash || 0) - (shiftData.expectedCash || 0),
-            status: 'closed',
-            updatedAt: nowStr
-          };
-          db.shifts.push(newShift);
-          app.addToast('Laporan shift ditambahkan', 'success');
-        } else {
-          const idx = db.shifts.findIndex(s => s.id === showShiftModal.shift.id);
-          if (idx !== -1) {
-            const expected = db.shifts[idx].expectedCash;
-            const diff = (shiftData.actualCash || 0) - expected;
-            db.shifts[idx] = {
-              ...db.shifts[idx],
-              ...shiftData,
-              difference: diff,
+        if (app.user?.role === 'owner') {
+          const db = getDB();
+          const nowStr = new Date().toISOString();
+          if (showShiftModal.mode === 'add') {
+            const newShift = {
+              id: 'SF' + Date.now(),
+              cashierId: app.user?.id || 'u2',
+              cashierName: app.user?.name || 'Kasir',
+              startTime: shiftData.startTime || nowStr,
+              endTime: shiftData.endTime || nowStr,
+              startCash: shiftData.startCash || 0,
+              expectedCash: shiftData.expectedCash || 0,
+              actualCash: shiftData.actualCash || 0,
+              difference: (shiftData.actualCash || 0) - (shiftData.expectedCash || 0),
+              status: 'closed',
               updatedAt: nowStr
             };
-            app.addToast('Laporan shift berhasil diperbarui', 'success');
+            db.shifts.push(newShift);
+            app.addToast('Laporan shift ditambahkan', 'success');
+          } else {
+            const idx = db.shifts.findIndex(s => s.id === showShiftModal.shift.id);
+            if (idx !== -1) {
+              const expected = db.shifts[idx].expectedCash;
+              const diff = (shiftData.actualCash || 0) - expected;
+              db.shifts[idx] = {
+                ...db.shifts[idx],
+                ...shiftData,
+                difference: diff,
+                updatedAt: nowStr
+              };
+              app.addToast('Laporan shift berhasil diperbarui', 'success');
+            }
           }
+          saveDB(db);
+          app.refreshDB();
+          setShowShiftModal(null);
+        } else {
+          setApprovalPrompt({
+            type: showShiftModal.mode === 'add' ? 'shift_add' : 'shift_edit',
+            targetId: showShiftModal.mode === 'edit' ? showShiftModal.shift.id : null,
+            data: shiftData,
+            title: showShiftModal.mode === 'add' ? 'Pengajuan Tambah Shift' : 'Pengajuan Edit Shift'
+          });
         }
-        saveDB(db);
-        app.refreshDB();
-        setShowShiftModal(null);
       };
 
       const handleDeleteShift = (shiftId) => {
@@ -4674,6 +5026,18 @@
             app.refreshDB();
             app.addToast('Laporan shift dihapus', 'success');
           }
+        }
+      };
+
+      const handleDeleteShiftClick = (shiftId) => {
+        if (app.user?.role === 'owner') {
+          handleDeleteShift(shiftId);
+        } else {
+          setApprovalPrompt({
+            type: 'shift_delete',
+            targetId: shiftId,
+            title: 'Pengajuan Hapus Shift'
+          });
         }
       };
 
@@ -5087,7 +5451,7 @@
                           {['admin', 'owner'].includes(app.user?.role) && (
                           <div className="flex justify-end gap-2 pr-2">
                             <button onClick={() => setShowShiftModal({ mode: 'edit', shift: s })} className="p-2 text-sky-600 bg-sky-50 hover:bg-sky-100 rounded-lg transition" title="Edit Shift"><Icon name="edit" size={14} /></button>
-                            <button onClick={() => handleDeleteShift(s.id)} className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition" title="Hapus Shift"><Icon name="trash-2" size={14} /></button>
+                            <button onClick={() => handleDeleteShiftClick(s.id)} className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition" title="Hapus Shift"><Icon name="trash-2" size={14} /></button>
                           </div>
                           )}
                         </td>
@@ -5133,6 +5497,34 @@
                 setShowAdminAuthModal(false);
                 setTargetTx(null);
                 setAuthAction(null);
+              }}
+            />
+          )}
+          {approvalPrompt && (
+            <ReasonModal
+              isOpen={!!approvalPrompt}
+              onClose={() => setApprovalPrompt(null)}
+              title={approvalPrompt.title}
+              onSubmit={(reason) => {
+                const currentDb = getDB();
+                const newApproval = {
+                  id: 'AP' + Date.now(),
+                  requesterId: app.user.id,
+                  requesterName: app.user.name,
+                  requesterRole: app.user.role,
+                  type: approvalPrompt.type,
+                  targetId: approvalPrompt.targetId,
+                  reason: reason.trim(),
+                  data: approvalPrompt.data || null,
+                  status: 'pending',
+                  createdAt: new Date().toISOString()
+                };
+                currentDb.adminApprovals.push(newApproval);
+                saveDB(currentDb);
+                app.refreshDB();
+                app.addToast('Pengajuan berhasil dikirim ke Owner', 'success');
+                setApprovalPrompt(null);
+                setShowShiftModal(null);
               }}
             />
           )}
@@ -5621,21 +6013,21 @@
                   <tr key={u.id} className={u.active === false ? 'bg-zinc-50/70 opacity-70' : 'hover:bg-zinc-50/60'}>
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-sky-100 text-sky-700 rounded-xl flex items-center justify-center font-bold text-sm">
+                        <div className="w-10 h-10 bg-zinc-50 border border-zinc-200 text-zinc-500 rounded-xl flex items-center justify-center font-bold text-sm">
                           {u.name?.substring(0, 2).toUpperCase()}
                         </div>
                         <div>
-                          <p className="font-bold text-zinc-800">{u.name}</p>
+                          <p className="font-bold text-zinc-800 text-sm">{u.name}</p>
                           <p className="text-xs text-zinc-500">{u.email}</p>
                         </div>
                       </div>
                     </td>
                     <td className="px-5 py-4">
-                      <span className="inline-flex px-2.5 py-1 rounded-lg bg-zinc-100 text-zinc-700 text-xs font-bold">{roleLabel(u.role)}</span>
+                      <span className="inline-flex px-2 py-0.5 rounded-lg border border-zinc-150 bg-zinc-50/50 text-zinc-650 text-[11px] font-semibold">{roleLabel(u.role)}</span>
                     </td>
                     <td className="px-5 py-4">
-                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold ${u.active === false ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${u.active === false ? 'bg-rose-500' : 'bg-emerald-500'}`}></span>
+                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-xs font-bold border ${u.active === false ? 'bg-zinc-50 border-zinc-200 text-zinc-400' : 'bg-emerald-50/40 border-emerald-200 text-emerald-600'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${u.active === false ? 'bg-zinc-400' : 'bg-emerald-500'}`}></span>
                         {u.active === false ? 'Nonaktif' : 'Aktif'}
                       </span>
                     </td>
@@ -5647,10 +6039,10 @@
                           <span className="text-xs text-zinc-400 font-medium italic">Diproteksi</span>
                         ) : (
                           <>
-                            <button onClick={() => setScannerUser(u)} className="p-2 bg-amber-50 text-amber-600 hover:bg-amber-100 rounded-lg" title="Ambil Foto"><Icon name="camera" size={16} /></button>
-                            <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="p-2 bg-sky-50 text-sky-600 hover:bg-sky-100 rounded-lg" title="Edit"><Icon name="pencil" size={16} /></button>
-                            <button onClick={() => toggleActive(u)} className="p-2 bg-zinc-100 text-zinc-600 hover:bg-zinc-200 rounded-lg" title={u.active === false ? 'Aktifkan' : 'Nonaktifkan'}><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={16} /></button>
-                            <button onClick={() => deleteUser(u)} className="p-2 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg" title="Hapus"><Icon name="trash-2" size={16} /></button>
+                            <button onClick={() => setScannerUser(u)} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Ambil Foto"><Icon name="camera" size={15} /></button>
+                            <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Edit"><Icon name="pencil" size={15} /></button>
+                            <button onClick={() => toggleActive(u)} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title={u.active === false ? 'Aktifkan' : 'Nonaktifkan'}><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={15} /></button>
+                            <button onClick={() => deleteUser(u)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition" title="Hapus"><Icon name="trash-2" size={15} /></button>
                           </>
                         )}
                       </div>
@@ -5666,15 +6058,15 @@
             {users.map(u => (
               <div key={u.id} className={`bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm ${u.active === false ? 'opacity-70' : ''}`}>
                 <div className="flex items-start gap-3">
-                  <div className="w-11 h-11 bg-sky-100 text-sky-700 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0">
+                  <div className="w-11 h-11 bg-zinc-50 border border-zinc-200 text-zinc-500 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0">
                     {u.name?.substring(0, 2).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1 text-left">
                     <p className="font-bold text-zinc-800 truncate">{u.name}</p>
                     <p className="text-xs text-zinc-500 truncate">{u.email}</p>
                     <div className="flex flex-wrap gap-2 mt-2">
-                      <span className="px-2 py-1 rounded-lg bg-zinc-100 text-zinc-700 text-[10px] font-bold">{roleLabel(u.role)}</span>
-                      <span className={`px-2 py-1 rounded-lg text-[10px] font-bold ${u.active === false ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                      <span className="px-2 py-0.5 rounded-lg border border-zinc-150 bg-zinc-50/50 text-zinc-650 text-[10px] font-semibold">{roleLabel(u.role)}</span>
+                      <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${u.active === false ? 'bg-zinc-50 border-zinc-200 text-zinc-400' : 'bg-emerald-50/40 border-emerald-250 text-emerald-600'}`}>
                         {u.active === false ? 'Nonaktif' : 'Aktif'}
                       </span>
                     </div>
@@ -5686,10 +6078,10 @@
                     <div className="col-span-4 text-center py-2 bg-zinc-50 rounded-xl text-xs text-zinc-400 font-medium italic">Akun Owner Diproteksi</div>
                   ) : (
                     <>
-                      <button onClick={() => setScannerUser(u)} className="py-2 bg-amber-50 text-amber-600 rounded-xl flex justify-center"><Icon name="camera" size={17} /></button>
-                      <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="py-2 bg-sky-50 text-sky-600 rounded-xl flex justify-center"><Icon name="pencil" size={17} /></button>
-                      <button onClick={() => toggleActive(u)} className="py-2 bg-zinc-100 text-zinc-600 rounded-xl flex justify-center"><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={17} /></button>
-                      <button onClick={() => deleteUser(u)} className="py-2 bg-rose-50 text-rose-600 rounded-xl flex justify-center"><Icon name="trash-2" size={17} /></button>
+                      <button onClick={() => setScannerUser(u)} className="py-2 bg-white border border-zinc-200 text-zinc-600 rounded-xl flex justify-center hover:bg-zinc-50 transition"><Icon name="camera" size={16} /></button>
+                      <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="py-2 bg-white border border-zinc-200 text-zinc-600 rounded-xl flex justify-center hover:bg-zinc-50 transition"><Icon name="pencil" size={16} /></button>
+                      <button onClick={() => toggleActive(u)} className="py-2 bg-white border border-zinc-200 text-zinc-600 rounded-xl flex justify-center hover:bg-zinc-50 transition"><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={16} /></button>
+                      <button onClick={() => deleteUser(u)} className="py-2 bg-white border border-zinc-200 text-rose-600 rounded-xl flex justify-center hover:bg-rose-50 hover:border-rose-250 transition"><Icon name="trash-2" size={16} /></button>
                     </>
                   )}
                 </div>
@@ -6348,12 +6740,12 @@
             </div>
             <div className="p-6 flex flex-col items-center">
               {cameraError ? (
-                <div className="w-full h-64 bg-zinc-50 rounded-2xl flex flex-col items-center justify-center text-zinc-400 border-2 border-dashed border-zinc-200 p-4 mb-4">
+                <div className="w-full h-64 bg-zinc-50 rounded-2xl flex flex-col items-center justify-center text-zinc-400 border border-dashed border-zinc-200 p-4 mb-4">
                   <Icon name="camera-off" size={48} className="mb-2 text-zinc-300" />
                   <p className="text-xs font-semibold text-center text-zinc-500 leading-normal">{cameraError}</p>
                 </div>
               ) : (
-                <div className="w-full aspect-video bg-zinc-950 rounded-2xl relative overflow-hidden border-2 border-zinc-250 shadow-inner flex items-center justify-center mb-4">
+                <div className="w-full aspect-video bg-zinc-950 rounded-2xl relative overflow-hidden border border-zinc-300 shadow-inner flex items-center justify-center mb-4">
                   <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" />
                   <canvas ref={canvasRef} className="hidden" />
                 </div>
@@ -6365,21 +6757,23 @@
                     <button 
                       onClick={handleCapture}
                       disabled={loading}
-                      className="flex-1 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-amber-600/10"
+                      type="button"
+                      className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl font-semibold flex items-center justify-center gap-2 transition"
                     >
-                      <Icon name="camera" size={18} /> {loading ? 'Mengambil...' : 'Ambil Foto'}
+                      <Icon name="camera" size={16} /> {loading ? 'Mengambil...' : 'Ambil Foto'}
                     </button>
                   )}
                   <button 
                     onClick={onClose} 
-                    className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl font-bold hover:bg-zinc-200 transition"
+                    type="button"
+                    className="flex-1 py-2.5 bg-zinc-100 text-zinc-650 rounded-xl font-semibold hover:bg-zinc-200 transition"
                   >
                     Batal
                   </button>
                 </div>
 
-                <label className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/10 cursor-pointer transition active:scale-[0.98]">
-                  <Icon name="upload" size={18} />
+                <label className="w-full py-2.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 rounded-xl font-semibold flex items-center justify-center gap-2 cursor-pointer transition active:scale-[0.98] shadow-sm">
+                  <Icon name="upload" size={16} />
                   <span>Unggah dari Galeri / Berkas</span>
                   <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
                 </label>
@@ -6532,17 +6926,17 @@
             
             <div className="p-6 flex flex-col items-center">
               {cameraError ? (
-                <div className="w-full h-64 bg-zinc-50 rounded-2xl flex flex-col items-center justify-center text-zinc-400 border-2 border-dashed border-zinc-200 p-4 mb-4">
+                <div className="w-full h-64 bg-zinc-50 rounded-2xl flex flex-col items-center justify-center text-zinc-400 border border-dashed border-zinc-200 p-4 mb-4">
                   <Icon name="camera-off" size={48} className="mb-2 text-zinc-300" />
                   <p className="text-xs font-semibold text-center text-zinc-500 leading-normal">{cameraError}</p>
                 </div>
               ) : (
-                <div className="w-full aspect-square bg-zinc-950 rounded-2xl relative overflow-hidden border-4 border-sky-500 shadow-inner flex items-center justify-center mb-4">
+                <div className="w-full aspect-square bg-zinc-950 rounded-2xl relative overflow-hidden border-4 border-zinc-900 shadow-inner flex items-center justify-center mb-4">
                   <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" />
                   <canvas ref={canvasRef} className="hidden" />
                   <div className="absolute inset-0 border-[32px] border-black/45 pointer-events-none">
-                    <div className="w-full h-full border border-sky-400/80 relative">
-                      <div className="absolute inset-x-0 top-1/2 h-0.5 bg-red-500/80 animate-pulse"></div>
+                    <div className="w-full h-full border border-zinc-700/80 relative">
+                      <div className="absolute inset-x-0 top-1/2 h-0.5 bg-zinc-400/80 animate-pulse"></div>
                     </div>
                   </div>
                 </div>
@@ -6553,21 +6947,23 @@
                   {!cameraError && (
                     <button 
                       onClick={handleCapture}
-                      className="flex-1 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-sky-600/10"
+                      type="button"
+                      className="flex-1 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl font-semibold flex items-center justify-center gap-2 transition"
                     >
-                      <Icon name="camera" size={18} /> Ambil Foto
+                      <Icon name="camera" size={16} /> Ambil Foto
                     </button>
                   )}
                   <button 
                     onClick={onClose} 
-                    className="flex-1 py-3 bg-zinc-150 hover:bg-zinc-200 text-zinc-700 rounded-xl font-bold"
+                    type="button"
+                    className="flex-1 py-2.5 bg-zinc-150 hover:bg-zinc-200 text-zinc-750 rounded-xl font-semibold transition"
                   >
                     Batal
                   </button>
                 </div>
 
-                <label className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/10 cursor-pointer transition active:scale-[0.98]">
-                  <Icon name="upload" size={18} />
+                <label className="w-full py-2.5 bg-white border border-zinc-250 hover:bg-zinc-50 text-zinc-700 rounded-xl font-semibold flex items-center justify-center gap-2 cursor-pointer transition active:scale-[0.98] shadow-sm">
+                  <Icon name="upload" size={16} />
                   <span>Unggah File Gambar / Bukti Scan</span>
                   <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
                 </label>
@@ -6605,7 +7001,8 @@
         }
         const cleanRole = selectedRole.toLowerCase().replace(/[^a-z]/g, '');
         if ((cleanRole === 'owner' || cleanRole === 'pemilik' || cleanRole.includes('owner') || cleanRole.includes('pemilik')) && app.user?.role !== 'owner') {
-          alert('Akses Ditolak: Anda tidak diizinkan membuat atau menetapkan role Pemilik/Owner!');
+          logAuditAction('⚠️ PELANGGARAN KEAMANAN', 'Admin mencoba membuat/mengubah akun (' + email + ') menjadi role Owner. Aksi berhasil dicegah.', app.user);
+          alert('Akses Ditolak: Anda tidak diizinkan membuat atau menetapkan role Pemilik/Owner! Percobaan pelanggaran ini telah dicatat dan dilaporkan kepada Owner.');
           return;
         }
         onSave({ name, email, password, role: selectedRole });
@@ -6862,7 +7259,7 @@
         } else if (roleId === 'admin_marketing') {
           setActiveTab('coupons');
         } else if (roleId === 'admin_gudang') {
-          setActiveTab('ledger');
+          setActiveTab('receipts');
         } else if (roleId === 'keuangan' || baseRole === 'keuangan') {
           setActiveTab('overview');
         } else if (roleId === 'manager' || baseRole === 'manager') {
@@ -7016,6 +7413,45 @@
       const [spvTaskPriority, setSpvTaskPriority] = useState('Sedang');
       const [spvTaskDueDate, setSpvTaskDueDate] = useState('');
       const [spvTaskAssignedTo, setSpvTaskAssignedTo] = useState('');
+
+      // 8. PETTY CASH STATES
+      const [pettyType, setPettyType] = useState('out'); // 'in' or 'out'
+      const [pettyAmount, setPettyAmount] = useState('');
+      const [pettyDesc, setPettyDesc] = useState('');
+
+      // 9. TAX PPN STATES
+      const [taxPeriod, setTaxPeriod] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
+      const [taxAmount, setTaxAmount] = useState('');
+      const [taxNtpn, setTaxNtpn] = useState('');
+
+      // 10. HR KPI STATES
+      const [kpiEmployeeId, setKpiEmployeeId] = useState('');
+      const [kpiPunctuality, setKpiPunctuality] = useState(5);
+      const [kpiService, setKpiService] = useState(5);
+      const [kpiAccuracy, setKpiAccuracy] = useState(5);
+
+      // 11. MARKETING BUNDLE STATES
+      const [bundleName, setBundleName] = useState('');
+      const [bundlePrice, setBundlePrice] = useState('');
+      const [bundleProducts, setBundleProducts] = useState([]); // Array of { productId, name, qty }
+      const [bundleProductSelect, setBundleProductSelect] = useState('');
+      const [bundleProductQty, setBundleProductQty] = useState(1);
+
+      // 12. GUDANG GOODS RECEIPT STATES
+      const [receiptProduct, setReceiptProduct] = useState('');
+      const [receiptQty, setReceiptQty] = useState('');
+      const [receiptSupplier, setReceiptSupplier] = useState('');
+      const [receiptNotes, setReceiptNotes] = useState('');
+
+      // 13. MANAGER TARGET STATES
+      const [targetAmount, setTargetAmount] = useState('');
+
+      // 14. SUPERVISOR INCIDENT STATES
+      const [incChronology, setIncChronology] = useState('');
+      const [incSeverity, setIncSeverity] = useState('Sedang'); // 'Rendah', 'Sedang', 'Tinggi'
+
+      // 15. STAFF HANDOVER STATES
+      const [handoverNotes, setHandoverNotes] = useState('');
 
       // --- Admin Ops Handlers ---
       const handleAddSupply = (e) => {
@@ -7601,15 +8037,605 @@
         }
       };
 
-      // ==================== RENDERING SUB-WORKSPACES ====================
+      // --- Petty Cash Handlers ---
+      const handleAddPettyCash = (e) => {
+        e.preventDefault();
+        const amt = parseFloat(pettyAmount) || 0;
+        if (amt <= 0) {
+          alert('Nominal harus lebih dari 0');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.pettyCash = currentDb.pettyCash || [];
+        const newRecord = {
+          id: 'PTY' + Date.now(),
+          type: pettyType,
+          amount: amt,
+          description: pettyDesc,
+          date: new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString(),
+          recordedBy: app.user?.name
+        };
+        currentDb.pettyCash.push(newRecord);
+        saveDB(currentDb);
+        app.refreshDB();
+        setPettyAmount('');
+        setPettyDesc('');
+        app.addToast('Catatan kas kecil disimpan', 'success');
+      };
+
+      const handleDeletePettyCash = (id) => {
+        if (!confirm('Hapus catatan kas kecil ini?')) return;
+        const currentDb = getDB();
+        currentDb.pettyCash = (currentDb.pettyCash || []).filter(x => x.id !== id);
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Catatan kas kecil dihapus', 'info');
+      };
+
+      // --- Tax Record Handlers ---
+      const handleAddTaxRecord = (e) => {
+        e.preventDefault();
+        const amt = parseFloat(taxAmount) || 0;
+        if (amt <= 0) {
+          alert('Nominal harus lebih dari 0');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.taxRecords = currentDb.taxRecords || [];
+        const newRecord = {
+          id: 'TAX' + Date.now(),
+          period: taxPeriod,
+          amount: amt,
+          ntpn: taxNtpn,
+          date: new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString(),
+          recordedBy: app.user?.name
+        };
+        currentDb.taxRecords.push(newRecord);
+        saveDB(currentDb);
+        app.refreshDB();
+        setTaxAmount('');
+        setTaxNtpn('');
+        app.addToast('Bukti setoran pajak disimpan', 'success');
+      };
+
+      const handleDeleteTaxRecord = (id) => {
+        if (!confirm('Hapus data setoran pajak ini?')) return;
+        const currentDb = getDB();
+        currentDb.taxRecords = (currentDb.taxRecords || []).filter(x => x.id !== id);
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Data setoran pajak dihapus', 'info');
+      };
+
+      // --- HR KPI Handlers ---
+      const handleAddStaffKPI = (e) => {
+        e.preventDefault();
+        if (!kpiEmployeeId) {
+          alert('Pilih karyawan terlebih dahulu');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.staffKPI = currentDb.staffKPI || [];
+        const emp = currentDb.users.find(u => u.id === kpiEmployeeId);
+        if (!emp) return;
+
+        const punct = parseFloat(kpiPunctuality) || 5;
+        const serv = parseFloat(kpiService) || 5;
+        const acc = parseFloat(kpiAccuracy) || 5;
+        const avg = parseFloat(((punct + serv + acc) / 3).toFixed(2));
+
+        const newKPI = {
+          id: 'KPI' + Date.now(),
+          employeeId: kpiEmployeeId,
+          employeeName: emp.name,
+          employeeRole: emp.roleLabel || emp.role,
+          punctuality: punct,
+          service: serv,
+          accuracy: acc,
+          average: avg,
+          date: new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString(),
+          raterName: app.user?.name
+        };
+        currentDb.staffKPI.push(newKPI);
+        saveDB(currentDb);
+        app.refreshDB();
+        setKpiEmployeeId('');
+        setKpiPunctuality(5);
+        setKpiService(5);
+        setKpiAccuracy(5);
+        app.addToast('Penilaian kinerja staf berhasil disimpan', 'success');
+      };
+
+      const handleDeleteStaffKPI = (id) => {
+        if (!confirm('Hapus penilaian kinerja ini?')) return;
+        const currentDb = getDB();
+        currentDb.staffKPI = (currentDb.staffKPI || []).filter(x => x.id !== id);
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Penilaian kinerja dihapus', 'info');
+      };
+
+      // --- Marketing Bundle Handlers ---
+      const handleAddBundleProduct = () => {
+        if (!bundleProductSelect) return;
+        const prod = db.products.find(p => p.id === bundleProductSelect);
+        if (!prod) return;
+
+        if (bundleProducts.some(p => p.productId === prod.id)) {
+          alert('Produk sudah ada di list bundling');
+          return;
+        }
+
+        const qty = parseInt(bundleProductQty) || 1;
+        setBundleProducts(prev => [...prev, {
+          productId: prod.id,
+          name: prod.name,
+          qty: qty
+        }]);
+        setBundleProductSelect('');
+        setBundleProductQty(1);
+      };
+
+      const handleRemoveBundleProduct = (productId) => {
+        setBundleProducts(prev => prev.filter(p => p.productId !== productId));
+      };
+
+      const handleSaveBundle = (e) => {
+        e.preventDefault();
+        if (bundleProducts.length === 0) {
+          alert('Pilih minimal 1 produk untuk bundling!');
+          return;
+        }
+        const price = parseFloat(bundlePrice) || 0;
+        if (price <= 0) {
+          alert('Harga combo harus lebih dari 0');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.productBundles = currentDb.productBundles || [];
+        const newBundle = {
+          id: 'BND' + Date.now(),
+          name: bundleName,
+          products: bundleProducts,
+          comboPrice: price,
+          active: true,
+          date: new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString(),
+          createdBy: app.user?.name
+        };
+        currentDb.productBundles.push(newBundle);
+        saveDB(currentDb);
+        app.refreshDB();
+        setBundleName('');
+        setBundlePrice('');
+        setBundleProducts([]);
+        app.addToast('Paket bundling combo berhasil disimpan', 'success');
+      };
+
+      const handleToggleBundle = (id) => {
+        const currentDb = getDB();
+        currentDb.productBundles = currentDb.productBundles || [];
+        const b = currentDb.productBundles.find(x => x.id === id);
+        if (b) {
+          b.active = !b.active;
+          saveDB(currentDb);
+          app.refreshDB();
+          app.addToast('Status paket bundling diperbarui', 'success');
+        }
+      };
+
+      const handleDeleteBundle = (id) => {
+        if (!confirm('Hapus paket bundling ini?')) return;
+        const currentDb = getDB();
+        currentDb.productBundles = (currentDb.productBundles || []).filter(x => x.id !== id);
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Paket bundling dihapus', 'info');
+      };
+
+      // --- Gudang Goods Receipt Handlers ---
+      const handleAddGoodsReceipt = (e) => {
+        e.preventDefault();
+        if (!receiptProduct) {
+          alert('Pilih produk terlebih dahulu');
+          return;
+        }
+        const qty = parseFloat(receiptQty) || 0;
+        if (qty <= 0) {
+          alert('Jumlah barang harus lebih dari 0');
+          return;
+        }
+        const currentDb = getDB();
+        const prod = currentDb.products.find(p => p.id === receiptProduct);
+        if (!prod) return;
+
+        prod.stock = (prod.stock || 0) + qty;
+        prod.updatedAt = new Date().toISOString();
+
+        currentDb.stockLedger = currentDb.stockLedger || [];
+        currentDb.stockLedger.push({
+          id: 'LDG' + Date.now(),
+          productId: prod.id,
+          productName: prod.name,
+          sku: prod.sku || '',
+          date: new Date().toISOString(),
+          type: 'Penerimaan Barang',
+          qty: qty,
+          notes: `Barang Masuk dari supplier: ${receiptSupplier}. Keterangan: ${receiptNotes}`
+        });
+
+        currentDb.goodsReceipts = currentDb.goodsReceipts || [];
+        currentDb.goodsReceipts.push({
+          id: 'GRC' + Date.now(),
+          productId: prod.id,
+          productName: prod.name,
+          sku: prod.sku || '',
+          qty: qty,
+          supplier: receiptSupplier,
+          notes: receiptNotes,
+          date: new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString(),
+          receivedBy: app.user?.name
+        });
+
+        logAuditAction('Terima Barang Masuk', `Gudang menerima ${qty} pcs "${prod.name}" dari ${receiptSupplier}`, app.user);
+        saveDB(currentDb);
+        app.refreshDB();
+
+        setReceiptProduct('');
+        setReceiptQty('');
+        setReceiptSupplier('');
+        setReceiptNotes('');
+        app.addToast('Barang masuk diterima & stok produk bertambah', 'success');
+      };
+
+      // --- Manager Target Handlers ---
+      const handleSaveSalesTarget = (e) => {
+        e.preventDefault();
+        const target = parseFloat(targetAmount) || 0;
+        if (target <= 0) {
+          alert('Target penjualan harus lebih dari 0');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.salesTargets = {
+          target: target,
+          month: new Date().toISOString().slice(0, 7)
+        };
+        saveDB(currentDb);
+        app.refreshDB();
+        setTargetAmount('');
+        app.addToast('Target penjualan bulanan diperbarui', 'success');
+      };
+
+      // --- Supervisor Incident Handlers ---
+      const handleAddIncident = (e) => {
+        e.preventDefault();
+        if (!incChronology) {
+          alert('Tulis kronologi insiden');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.shopIncidents = currentDb.shopIncidents || [];
+        const newIncident = {
+          id: 'INC' + Date.now(),
+          chronology: incChronology,
+          severity: incSeverity,
+          status: 'Menunggu',
+          reporterName: app.user?.name,
+          date: new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString()
+        };
+        currentDb.shopIncidents.push(newIncident);
+        logAuditAction('Lapor Insiden', `Supervisor melaporkan insiden: "${incChronology.slice(0, 50)}..." [${incSeverity}]`, app.user);
+        saveDB(currentDb);
+        app.refreshDB();
+        setIncChronology('');
+        setIncSeverity('Sedang');
+        app.addToast('Laporan insiden berhasil dikirim', 'success');
+      };
+
+      const handleResolveIncident = (id) => {
+        const currentDb = getDB();
+        currentDb.shopIncidents = currentDb.shopIncidents || [];
+        const inc = currentDb.shopIncidents.find(x => x.id === id);
+        if (inc) {
+          inc.status = 'Selesai';
+          inc.resolvedAt = new Date().toISOString();
+          inc.resolvedBy = app.user?.name;
+          logAuditAction('Selesaikan Insiden', `Insiden resolved: ID ${id}`, app.user);
+          saveDB(currentDb);
+          app.refreshDB();
+          app.addToast('Insiden ditandai selesai', 'success');
+        }
+      };
+
+      // --- Staff Handover Handlers ---
+      const handleAddHandover = (e) => {
+        e.preventDefault();
+        if (!handoverNotes) {
+          alert('Tulis catatan serah terima');
+          return;
+        }
+        const currentDb = getDB();
+        currentDb.handovers = currentDb.handovers || [];
+        const newHandover = {
+          id: 'HND' + Date.now(),
+          notes: handoverNotes,
+          senderName: app.user?.name,
+          date: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        };
+        currentDb.handovers.push(newHandover);
+        saveDB(currentDb);
+        app.refreshDB();
+        setHandoverNotes('');
+        app.addToast('Catatan serah terima shift disimpan', 'success');
+      };
+
+      // ==================== RENDERING SUB-WORKSPACES       const renderPettyCashView = () => {
+        const pettyList = db.pettyCash || [];
+        const totalPettyIn = pettyList.filter(x => x.type === 'in').reduce((acc, x) => acc + x.amount, 0);
+        const totalPettyOut = pettyList.filter(x => x.type === 'out').reduce((acc, x) => acc + x.amount, 0);
+        const pettyBalance = 2000000 + totalPettyIn - totalPettyOut;
+
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm text-left">
+              <h4 className="font-bold text-zinc-800 text-sm mb-4">Catat Arus Kas Kecil</h4>
+              <form onSubmit={handleAddPettyCash} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Jenis Transaksi</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPettyType('out')}
+                      className={`flex-1 py-2 rounded-xl text-xs font-bold transition border ${
+                        pettyType === 'out'
+                          ? 'bg-rose-50 border-rose-200 text-rose-700 font-bold'
+                          : 'bg-zinc-50 border-zinc-200 text-zinc-500'
+                      }`}
+                    >
+                      Kas Keluar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPettyType('in')}
+                      className={`flex-1 py-2 rounded-xl text-xs font-bold transition border ${
+                        pettyType === 'in'
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700 font-bold'
+                          : 'bg-zinc-50 border-zinc-200 text-zinc-500'
+                      }`}
+                    >
+                      Kas Masuk
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Nominal (Rp)</label>
+                  <input
+                    type="number"
+                    value={pettyAmount}
+                    onChange={e => setPettyAmount(e.target.value)}
+                    required
+                    min="1"
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm"
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Keterangan / Alasan</label>
+                  <textarea
+                    value={pettyDesc}
+                    onChange={e => setPettyDesc(e.target.value)}
+                    required
+                    rows={3}
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-xs"
+                    placeholder="Misal: beli sapu baru, parkir ojol, dll..."
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                >
+                  Simpan Catatan
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-2 space-y-6 text-left">
+              <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm flex justify-between items-center">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Saldo Kas Kecil Toko</p>
+                  <h3 className="text-xl font-bold text-zinc-900 mt-1">Rp {pettyBalance.toLocaleString('id-ID')}</h3>
+                </div>
+                <div className="text-right text-[10px] text-zinc-450 space-y-0.5">
+                  <p>Modal Awal Baseline: <span className="font-bold font-mono">Rp 2.000.000</span></p>
+                  <p className="text-emerald-600 font-semibold font-mono">Total Masuk: +Rp {totalPettyIn.toLocaleString('id-ID')}</p>
+                  <p className="text-rose-600 font-semibold font-mono">Total Keluar: -Rp {totalPettyOut.toLocaleString('id-ID')}</p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                <h4 className="font-bold text-zinc-800 text-sm mb-4">Mutasi Kas Kecil</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                        <th className="p-3 text-left">Tanggal</th>
+                        <th className="p-3 text-left">Tipe</th>
+                        <th className="p-3 text-left">Keterangan</th>
+                        <th className="p-3 text-right">Jumlah</th>
+                        <th className="p-3 text-right">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {pettyList.map(item => (
+                        <tr key={item.id} className="hover:bg-zinc-50/50">
+                          <td className="p-3 text-zinc-550">{new Date(item.date).toLocaleDateString('id-ID')}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                              item.type === 'in' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                            }`}>
+                              {item.type === 'in' ? 'Kas Masuk' : 'Kas Keluar'}
+                            </span>
+                          </td>
+                          <td className="p-3 text-zinc-650 italic">{item.description}</td>
+                          <td className={`p-3 text-right font-bold font-mono ${
+                            item.type === 'in' ? 'text-emerald-600' : 'text-rose-600'
+                          }`}>
+                            {item.type === 'in' ? '+' : '-'} Rp {item.amount.toLocaleString('id-ID')}
+                          </td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => handleDeletePettyCash(item.id)}
+                              className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"
+                            >
+                              <Icon name="trash-2" size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {pettyList.length === 0 && (
+                        <tr>
+                          <td colSpan="5" className="text-center p-8 text-zinc-400">
+                            Belum ada aktivitas kas kecil.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderTaxPpnView = () => {
+        const totalTxSales = (db.transactions || []).reduce((acc, t) => acc + (t.total || 0), 0);
+        const calculatedPpn = totalTxSales * 0.10;
+        const taxList = db.taxRecords || [];
+        const totalTaxPaid = taxList.reduce((acc, x) => acc + x.amount, 0);
+
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-left">
+            <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
+              <h4 className="font-bold text-zinc-800 text-sm mb-4">Input Setoran Pajak PPN</h4>
+              <form onSubmit={handleAddTaxRecord} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Masa Pajak / Bulan</label>
+                  <input
+                    type="month"
+                    value={taxPeriod}
+                    onChange={e => setTaxPeriod(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Nominal Setor (Rp)</label>
+                  <input
+                    type="number"
+                    value={taxAmount}
+                    onChange={e => setTaxAmount(e.target.value)}
+                    required
+                    min="1"
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm"
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Kode NTPN Setoran</label>
+                  <input
+                    type="text"
+                    value={taxNtpn}
+                    onChange={e => setTaxNtpn(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm font-mono"
+                    placeholder="16 digit NTPN..."
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                >
+                  Simpan Bukti Setor
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-2 space-y-6">
+              <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Penjualan POS</p>
+                  <h3 className="text-md font-bold text-zinc-800 mt-1 font-mono">Rp {totalTxSales.toLocaleString('id-ID')}</h3>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Kewajiban PPN (10%)</p>
+                  <h3 className="text-md font-bold text-amber-600 mt-1 font-mono">Rp {calculatedPpn.toLocaleString('id-ID')}</h3>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Sudah Setor (NTPN)</p>
+                  <h3 className="text-md font-bold text-emerald-600 mt-1 font-mono">Rp {totalTaxPaid.toLocaleString('id-ID')}</h3>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                <h4 className="font-bold text-zinc-800 text-sm mb-4">Riwayat Setoran Pajak (NTPN)</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                        <th className="p-3 text-left">Masa Pajak</th>
+                        <th className="p-3 text-left">Kode NTPN</th>
+                        <th className="p-3 text-left">Tanggal Setor</th>
+                        <th className="p-3 text-right">Nominal</th>
+                        <th className="p-3 text-right">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {taxList.map(item => (
+                        <tr key={item.id} className="hover:bg-zinc-50/50">
+                          <td className="p-3 font-bold text-zinc-700">{item.period}</td>
+                          <td className="p-3 font-mono text-sky-750 font-semibold">{item.ntpn}</td>
+                          <td className="p-3 text-zinc-500">{new Date(item.date).toLocaleDateString('id-ID')}</td>
+                          <td className="p-3 text-right font-bold text-zinc-800 font-mono">Rp {item.amount.toLocaleString('id-ID')}</td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => handleDeleteTaxRecord(item.id)}
+                              className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"
+                            >
+                              <Icon name="trash-2" size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {taxList.length === 0 && (
+                        <tr>
+                          <td colSpan="5" className="text-center p-8 text-zinc-400">
+                            Belum ada setoran pajak PPN diinput.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
       const renderKeuanganWorkspace = () => {
-        // Calculate financial totals
         const totalRevenue = (db.transactions || []).reduce((acc, t) => acc + (t.total || 0), 0);
         const totalExpenses = (db.expenses || []).reduce((acc, e) => acc + (e.amount || 0), 0);
         const unpaidInvoicesAmount = (db.invoices || []).filter(i => i.status === 'unpaid' || i.status === 'Belum Lunas').reduce((acc, i) => acc + (i.amount || 0), 0);
         const netProfit = totalRevenue - totalExpenses;
 
-        // Cash flow history
         const cashFlow = [];
         (db.transactions || []).forEach(t => {
           cashFlow.push({
@@ -7635,32 +8661,32 @@
 
         return (
           <div className="space-y-6 text-left">
-            {/* TABS */}
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('overview')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'overview' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Ringkasan Keuangan</button>
               <button onClick={() => setActiveTab('invoices')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'invoices' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Invoice Pemasok</button>
               <button onClick={() => setActiveTab('expenses')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'expenses' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pengeluaran Harian</button>
+              <button onClick={() => setActiveTab('petty_cash')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'petty_cash' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kas Kecil (Petty Cash)</button>
+              <button onClick={() => setActiveTab('tax_ppn')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'tax_ppn' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pajak PPN & Setoran</button>
             </div>
 
-            {/* TAB: OVERVIEW */}
             {activeTab === 'overview' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Pendapatan POS</p>
-                    <h3 className="text-lg font-bold text-emerald-600 mt-1">Rp {totalRevenue.toLocaleString('id-ID')}</h3>
+                    <h3 className="text-lg font-bold text-emerald-600 mt-1 font-mono">Rp {totalRevenue.toLocaleString('id-ID')}</h3>
                   </div>
                   <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Pengeluaran</p>
-                    <h3 className="text-lg font-bold text-rose-600 mt-1">Rp {totalExpenses.toLocaleString('id-ID')}</h3>
+                    <h3 className="text-lg font-bold text-rose-600 mt-1 font-mono">Rp {totalExpenses.toLocaleString('id-ID')}</h3>
                   </div>
                   <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
-                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Piutang / Invoice Belum Lunas</p>
-                    <h3 className="text-lg font-bold text-amber-600 mt-1">Rp {unpaidInvoicesAmount.toLocaleString('id-ID')}</h3>
+                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Piutang / Belum Lunas</p>
+                    <h3 className="text-lg font-bold text-amber-600 mt-1 font-mono">Rp {unpaidInvoicesAmount.toLocaleString('id-ID')}</h3>
                   </div>
                   <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Laba / (Rugi) Bersih</p>
-                    <h3 className={`text-lg font-bold mt-1 ${netProfit >= 0 ? 'text-sky-600' : 'text-rose-600'}`}>
+                    <h3 className={`text-lg font-bold mt-1 font-mono ${netProfit >= 0 ? 'text-sky-600' : 'text-rose-600'}`}>
                       Rp {netProfit.toLocaleString('id-ID')}
                     </h3>
                   </div>
@@ -7681,14 +8707,14 @@
                       <tbody className="divide-y divide-zinc-100">
                         {cashFlowSorted.map((item, idx) => (
                           <tr key={idx} className="hover:bg-zinc-50/50">
-                            <td className="p-3 text-zinc-500">{new Date(item.date).toLocaleDateString('id-ID')}</td>
+                            <td className="p-3 text-zinc-550">{new Date(item.date).toLocaleDateString('id-ID')}</td>
                             <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded font-bold ${item.isIncoming ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${item.isIncoming ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                                 {item.type}
                               </span>
                             </td>
                             <td className="p-3 text-zinc-650 italic">{item.desc}</td>
-                            <td className={`p-3 text-right font-bold ${item.isIncoming ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            <td className={`p-3 text-right font-bold font-mono ${item.isIncoming ? 'text-emerald-600' : 'text-rose-600'}`}>
                               {item.isIncoming ? '+' : '-'} Rp {item.amount.toLocaleString('id-ID')}
                             </td>
                           </tr>
@@ -7703,7 +8729,6 @@
               </div>
             )}
 
-            {/* TAB: INVOICES */}
             {activeTab === 'invoices' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
@@ -7750,15 +8775,15 @@
                           <tr key={item.id} className="hover:bg-zinc-50/50">
                             <td className="p-3 font-mono font-bold text-sky-750">{item.invoiceNo || item.invNo}</td>
                             <td className="p-3 font-bold text-zinc-700">{item.supplier}</td>
-                            <td className="p-3 text-right font-bold text-zinc-800">Rp {item.amount?.toLocaleString('id-ID')}</td>
+                            <td className="p-3 text-right font-bold text-zinc-800 font-mono">Rp {item.amount?.toLocaleString('id-ID')}</td>
                             <td className="p-3 text-center text-zinc-500">{item.dueDate}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 (item.status === 'Lunas' || item.status === 'paid') ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
                               }`}>{item.status === 'paid' ? 'Lunas' : (item.status === 'unpaid' ? 'Belum Lunas' : item.status)}</span>
                             </td>
                             <td className="p-3 text-right space-x-1">
-                              <button onClick={() => handleToggleFinInvoice(item.id)} className="px-2 py-1 bg-zinc-100 text-zinc-700 font-bold rounded hover:bg-zinc-200">Ubah Status</button>
+                              <button onClick={() => handleToggleFinInvoice(item.id)} className="px-2 py-1 bg-zinc-100 text-zinc-700 font-bold rounded hover:bg-zinc-200 text-[10px]">Ubah Status</button>
                               <button onClick={() => handleDeleteInvoice(item.id)} className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"><Icon name="trash-2" size={12} /></button>
                             </td>
                           </tr>
@@ -7773,7 +8798,6 @@
               </div>
             )}
 
-            {/* TAB: EXPENSES */}
             {activeTab === 'expenses' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
@@ -7819,9 +8843,9 @@
                         {expensesList.map(item => (
                           <tr key={item.id} className="hover:bg-zinc-50/50">
                             <td className="p-3 text-zinc-550">{item.date}</td>
-                            <td className="p-3"><span className="px-2 py-0.5 rounded font-bold bg-amber-50 text-amber-700">{item.category}</span></td>
+                            <td className="p-3"><span className="px-2 py-0.5 rounded font-bold bg-amber-50 text-amber-700 text-[10px]">{item.category}</span></td>
                             <td className="p-3 text-zinc-650 italic">{item.desc || item.description}</td>
-                            <td className="p-3 text-right font-bold text-zinc-800">Rp {item.amount?.toLocaleString('id-ID')}</td>
+                            <td className="p-3 text-right font-bold text-zinc-800 font-mono">Rp {item.amount?.toLocaleString('id-ID')}</td>
                             <td className="p-3 text-right">
                               <button onClick={() => handleDeleteExpense(item.id)} className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"><Icon name="trash-2" size={12} /></button>
                             </td>
@@ -7836,12 +8860,14 @@
                 </div>
               </div>
             )}
+
+            {activeTab === 'petty_cash' && renderPettyCashView()}
+            {activeTab === 'tax_ppn' && renderTaxPpnView()}
           </div>
         );
       };
 
       const renderManagerWorkspace = () => {
-        // Calculations
         const todayStr = new Date().toISOString().slice(0, 10);
         const todaySales = (db.transactions || []).filter(t => t.date?.slice(0, 10) === todayStr).reduce((acc, t) => acc + (t.total || 0), 0);
         const pendingBypasses = (db.bypassRequests || []).filter(r => r.status === 'pending');
@@ -7852,20 +8878,19 @@
 
         return (
           <div className="space-y-6 text-left">
-            {/* TABS */}
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('overview')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'overview' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Ringkasan Operasional</button>
+              <button onClick={() => setActiveTab('target_sales')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'target_sales' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Target Penjualan</button>
               <button onClick={() => setActiveTab('bypass')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'bypass' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Otorisasi Izin Kasir ({pendingBypasses.length})</button>
               <button onClick={() => setActiveTab('audit')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'audit' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Log Audit Pegawai</button>
             </div>
 
-            {/* TAB: OVERVIEW */}
             {activeTab === 'overview' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Penjualan Hari Ini</p>
-                    <h3 className="text-lg font-bold text-emerald-600 mt-1">Rp {todaySales.toLocaleString('id-ID')}</h3>
+                    <h3 className="text-lg font-bold text-emerald-600 mt-1 font-mono">Rp {todaySales.toLocaleString('id-ID')}</h3>
                   </div>
                   <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Izin Bypass Tertunda</p>
@@ -7878,7 +8903,7 @@
                 </div>
 
                 <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
-                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Pemberitahuan Stok Menipis (Butuh Restock Segera)</h4>
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Pemberitahuan Stok Menipis</h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
@@ -7912,7 +8937,86 @@
               </div>
             )}
 
-            {/* TAB: BYPASS */}
+            {activeTab === 'target_sales' && (() => {
+              const currentTargetObj = db.salesTargets || { target: 50000000, month: new Date().toISOString().slice(0, 7) };
+              const currentMonthStr = new Date().toISOString().slice(0, 7);
+              const currentMonthTx = (db.transactions || []).filter(t => t.date && t.date.slice(0, 7) === currentMonthStr);
+              const currentMonthRevenue = currentMonthTx.reduce((acc, t) => acc + (t.total || 0), 0);
+              const percentage = Math.min(100, Math.round((currentMonthRevenue / currentTargetObj.target) * 100) || 0);
+
+              return (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
+                    <h4 className="font-bold text-zinc-800 text-sm mb-4">Set Target Penjualan Bulanan</h4>
+                    <form onSubmit={handleSaveSalesTarget} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Masa Target (Bulan Ini)</label>
+                        <input
+                          type="text"
+                          disabled
+                          value={new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                          className="w-full px-3 py-2 bg-zinc-100 border border-zinc-200 rounded-xl text-sm font-bold text-zinc-650 cursor-not-allowed"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Target Nominal (Rp)</label>
+                        <input
+                          type="number"
+                          value={targetAmount}
+                          onChange={e => setTargetAmount(e.target.value)}
+                          required
+                          min="1"
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm"
+                          placeholder={currentTargetObj.target}
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                      >
+                        Perbarui Target
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-6 shadow-sm space-y-6">
+                    <h4 className="font-bold text-zinc-800 text-sm">Pencapaian Target Bulanan</h4>
+                    
+                    <div className="bg-zinc-50 p-6 rounded-2xl border border-zinc-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                      <div>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Target Bulan Ini ({currentTargetObj.month})</p>
+                        <h3 className="text-xl font-bold text-zinc-800 mt-1 font-mono">Rp {currentTargetObj.target.toLocaleString('id-ID')}</h3>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Realisasi Penjualan</p>
+                        <h3 className="text-xl font-bold text-emerald-600 mt-1 font-mono">Rp {currentMonthRevenue.toLocaleString('id-ID')}</h3>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-xs font-bold text-zinc-700">
+                        <span>Progress Pencapaian</span>
+                        <span>{percentage}%</span>
+                      </div>
+                      <div className="w-full bg-zinc-150 h-4 rounded-full overflow-hidden border border-zinc-200">
+                        <div
+                          style={{ width: `${percentage}%` }}
+                          className={`h-full transition-all duration-500 ${
+                            percentage >= 100 ? 'bg-emerald-500' : (percentage >= 50 ? 'bg-sky-500' : 'bg-amber-500')
+                          }`}
+                        />
+                      </div>
+                      <p className="text-[10px] text-zinc-450 italic mt-1">
+                        {percentage >= 100 
+                          ? '🎉 Selamat! Target penjualan bulan ini telah tercapai.' 
+                          : `Kurang Rp ${(Math.max(0, currentTargetObj.target - currentMonthRevenue)).toLocaleString('id-ID')} lagi untuk mencapai target.`}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {activeTab === 'bypass' && (
               <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
                 <h4 className="font-bold text-zinc-800 text-sm mb-4">Persetujuan Otorisasi Bypass Kasir</h4>
@@ -7938,7 +9042,7 @@
                           <td className="p-3 text-zinc-650">{req.location || 'Unknown'}</td>
                           <td className="p-3 text-zinc-650 truncate max-w-[150px]" title={req.device}>{req.device || 'Web Browser'}</td>
                           <td className="p-3 text-center">
-                            <span className={`px-2 py-0.5 rounded font-bold ${
+                            <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                               req.status === 'approved' || req.status === 'Disetujui' ? 'bg-emerald-50 text-emerald-700' :
                               req.status === 'rejected' || req.status === 'Ditolak' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700 animate-pulse'
                             }`}>{req.status}</span>
@@ -7962,7 +9066,6 @@
               </div>
             )}
 
-            {/* TAB: AUDIT */}
             {activeTab === 'audit' && (
               <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
                 <h4 className="font-bold text-zinc-800 text-sm mb-4">Log Audit Aktivitas Sistem</h4>
@@ -7996,7 +9099,7 @@
               </div>
             )}
           </div>
-        );
+      );
       };
 
       const renderSupervisorWorkspace = () => {
@@ -8004,14 +9107,13 @@
 
         return (
           <div className="space-y-6 text-left">
-            {/* TABS */}
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('control')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'control' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kontrol Shift & Kas</button>
               <button onClick={() => setActiveTab('attendance')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'attendance' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Presensi Pegawai</button>
               <button onClick={() => setActiveTab('tasks')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'tasks' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Delegasi Tugas Harian</button>
+              <button onClick={() => setActiveTab('incidents')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'incidents' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Laporan Insiden Toko</button>
             </div>
 
-            {/* TAB: CONTROL */}
             {activeTab === 'control' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
@@ -8061,7 +9163,6 @@
               </div>
             )}
 
-            {/* TAB: ATTENDANCE */}
             {activeTab === 'attendance' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
@@ -8113,7 +9214,7 @@
                             <td className="p-3 font-bold text-zinc-700">{item.employeeName}</td>
                             <td className="p-3 text-center text-zinc-650">{item.date}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Hadir' ? 'bg-emerald-50 text-emerald-700' :
                                 item.status === 'Sakit' ? 'bg-amber-50 text-amber-700' :
                                 item.status === 'Izin' ? 'bg-sky-50 text-sky-700' : 'bg-rose-50 text-rose-700'
@@ -8132,7 +9233,6 @@
               </div>
             )}
 
-            {/* TAB: TASKS */}
             {activeTab === 'tasks' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
@@ -8143,17 +9243,8 @@
                       <input type="text" value={spvTaskTitle} onChange={e => setSpvTaskTitle(e.target.value)} required className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm" placeholder="Bersihkan area pajang..." />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Deskripsi Tugas</label>
-                      <textarea value={spvTaskDesc} onChange={e => setSpvTaskDesc(e.target.value)} required rows={3} className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-xs" placeholder="Detail instruksi pengerjaan..."></textarea>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Tugaskan Kepada (Staf)</label>
-                      <select value={spvTaskAssignedTo} onChange={e => setSpvTaskAssignedTo(e.target.value)} required className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-sm focus:bg-white">
-                        <option value="">-- Pilih Staf --</option>
-                        {staffList.map(s => (
-                          <option key={s.id} value={s.email}>{s.name} ({s.roleLabel || s.role})</option>
-                        ))}
-                      </select>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Deskripsi Detail</label>
+                      <textarea value={spvTaskDesc} onChange={e => setSpvTaskDesc(e.target.value)} required rows={3} className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-xs" placeholder="Detail petunjuk pengerjaan tugas..."></textarea>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
@@ -8165,24 +9256,33 @@
                         </select>
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Batas Waktu</label>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Batas Waktu (Due)</label>
                         <input type="date" value={spvTaskDueDate} onChange={e => setSpvTaskDueDate(e.target.value)} required className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-xs" />
                       </div>
                     </div>
-                    <button type="submit" className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition">Kirim Tugas</button>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Tugaskan Kepada (Email)</label>
+                      <select value={spvTaskAssignedTo} onChange={e => setSpvTaskAssignedTo(e.target.value)} required className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-xs focus:bg-white">
+                        <option value="">-- Pilih Staf --</option>
+                        {staffList.map(s => (
+                          <option key={s.id} value={s.email}>{s.name} ({s.roleLabel || s.role})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button type="submit" className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition">Kirim Delegasi</button>
                   </form>
                 </div>
 
                 <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
-                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Monitoring Progress Tugas Harian</h4>
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Daftar Penugasan Harian</h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
-                          <th className="p-3 text-left">Tugas</th>
-                          <th className="p-3 text-left">Pelaksana</th>
-                          <th className="p-3 text-center">Prioritas</th>
-                          <th className="p-3 text-center">Batas Waktu</th>
+                          <th className="p-3 text-left">Judul Tugas</th>
+                          <th className="p-3 text-left">Deskripsi</th>
+                          <th className="p-3 text-left">Ditugaskan Ke</th>
+                          <th className="p-3 text-center">Batas</th>
                           <th className="p-3 text-center">Status</th>
                           <th className="p-3 text-right">Aksi</th>
                         </tr>
@@ -8190,20 +9290,15 @@
                       <tbody className="divide-y divide-zinc-100">
                         {tasksList.filter(t => t.title).map(item => (
                           <tr key={item.id} className="hover:bg-zinc-50/50">
-                            <td className="p-3">
-                              <p className="font-bold text-zinc-700">{item.title}</p>
-                              <p className="text-[10px] text-zinc-400 truncate max-w-[180px]">{item.description}</p>
-                            </td>
-                            <td className="p-3 font-semibold text-zinc-650">{item.assignedToName || 'Staf'}</td>
-                            <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                                item.priority === 'Tinggi' ? 'bg-rose-50 text-rose-700' :
-                                item.priority === 'Sedang' ? 'bg-amber-50 text-amber-700' : 'bg-zinc-100 text-zinc-600'
-                              }`}>{item.priority}</span>
+                            <td className="p-3 font-bold text-zinc-700">{item.title}</td>
+                            <td className="p-3 text-zinc-600 italic truncate max-w-[150px]" title={item.description}>{item.description}</td>
+                            <td className="p-3 text-zinc-500">
+                              <p className="font-semibold text-zinc-700">{item.assignedToName}</p>
+                              <p className="text-[10px] text-zinc-450">{item.assignedTo}</p>
                             </td>
                             <td className="p-3 text-center text-zinc-500">{item.dueDate}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Selesai' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
                               }`}>{item.status}</span>
                             </td>
@@ -8221,6 +9316,103 @@
                 </div>
               </div>
             )}
+
+            {activeTab === 'incidents' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Laporkan Insiden Operasional Toko</h4>
+                  <form onSubmit={handleAddIncident} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Tingkat Keparahan</label>
+                      <select
+                        value={incSeverity}
+                        onChange={e => setIncSeverity(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                      >
+                        <option value="Rendah">🟢 Rendah (minor)</option>
+                        <option value="Sedang">🟡 Sedang (butuh penanganan)</option>
+                        <option value="Tinggi">🔴 Tinggi (urgen/kritis)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Kronologi Kejadian</label>
+                      <textarea
+                        value={incChronology}
+                        onChange={e => setIncChronology(e.target.value)}
+                        required
+                        rows={4}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-xs"
+                        placeholder="Tulis detail kejadian (cth: mati lampu 1 jam, mesin EDC error, barang kemalingan...)"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                    >
+                      Kirim Laporan
+                    </button>
+                  </form>
+                </div>
+
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Log Riwayat Insiden Toko</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                          <th className="p-3 text-left">Tanggal</th>
+                          <th className="p-3 text-left">Kronologi Kejadian</th>
+                          <th className="p-3 text-center">Keparahan</th>
+                          <th className="p-3 text-center">Status</th>
+                          <th className="p-3 text-right">Aksi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-100">
+                        {(db.shopIncidents || []).map(item => (
+                          <tr key={item.id} className="hover:bg-zinc-50/50">
+                            <td className="p-3 text-zinc-550">{item.date}</td>
+                            <td className="p-3 font-semibold text-zinc-700 italic max-w-[250px] truncate" title={item.chronology}>
+                              {item.chronology}
+                            </td>
+                            <td className="p-3 text-center">
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                item.severity === 'Tinggi' ? 'bg-rose-50 text-rose-700 border border-rose-100' :
+                                item.severity === 'Sedang' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
+                                'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                              }`}>{item.severity}</span>
+                            </td>
+                            <td className="p-3 text-center font-bold">
+                              <span className={`px-2 py-0.5 rounded text-[10px] ${
+                                item.status === 'Selesai' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700 animate-pulse'
+                              }`}>{item.status}</span>
+                            </td>
+                            <td className="p-3 text-right whitespace-nowrap text-zinc-450">
+                              {item.status === 'Menunggu' ? (
+                                <button
+                                  onClick={() => handleResolveIncident(item.id)}
+                                  className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold"
+                                >
+                                  Tandai Selesai
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-zinc-400">Resolved by {item.resolvedBy}</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {(db.shopIncidents || []).length === 0 && (
+                          <tr>
+                            <td colSpan="5" className="text-center p-8 text-zinc-400">
+                              Belum ada catatan insiden toko terdaftar.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       };
@@ -8231,14 +9423,13 @@
 
         return (
           <div className="space-y-6 text-left">
-            {/* TABS */}
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('tasks')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'tasks' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Tugas Pekerjaan Saya ({myTasks.filter(t => t.status !== 'Selesai').length})</button>
               <button onClick={() => setActiveTab('schedules')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'schedules' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Jadwal Shift Kerja</button>
+              <button onClick={() => setActiveTab('handover')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'handover' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Buku Serah Terima</button>
               <button onClick={() => setActiveTab('sop')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'sop' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Panduan SOP Pegawai</button>
             </div>
 
-            {/* TAB: TASKS */}
             {activeTab === 'tasks' && (
               <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
                 <h4 className="font-bold text-zinc-800 text-sm mb-4">Daftar Tugas Harian Ditugaskan</h4>
@@ -8283,7 +9474,6 @@
               </div>
             )}
 
-            {/* TAB: SCHEDULES */}
             {activeTab === 'schedules' && (
               <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
                 <h4 className="font-bold text-zinc-800 text-sm mb-4">Jadwal Shift Kerja Anda</h4>
@@ -8319,7 +9509,51 @@
               </div>
             )}
 
-            {/* TAB: SOP */}
+            {activeTab === 'handover' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm text-left">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Catat Serah Terima Shift</h4>
+                  <form onSubmit={handleAddHandover} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Catatan / Pesan untuk Shift Berikutnya</label>
+                      <textarea
+                        value={handoverNotes}
+                        onChange={e => setHandoverNotes(e.target.value)}
+                        required
+                        rows={4}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-xs"
+                        placeholder="Tulis pesan serah terima (cth: uang laci pas Rp 350.000, stok teh pucuk habis di kulkas pendingin, titipan kunci gembok...)"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                    >
+                      Simpan Catatan
+                    </button>
+                  </form>
+                </div>
+
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm text-left">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Buku Log Serah Terima Shift (Handover)</h4>
+                  <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
+                    {(db.handovers || []).slice().reverse().map(item => (
+                      <div key={item.id} className="p-4 bg-zinc-50 hover:bg-zinc-100/50 rounded-2xl border border-zinc-150 text-left space-y-2 transition">
+                        <div className="flex justify-between items-center text-[10px] text-zinc-400">
+                          <span className="font-bold text-sky-700">Oleh: {item.senderName}</span>
+                          <span className="font-mono">{new Date(item.date).toLocaleString('id-ID')}</span>
+                        </div>
+                        <p className="text-xs font-medium text-zinc-700 leading-relaxed font-mono whitespace-pre-line">{item.notes}</p>
+                      </div>
+                    ))}
+                    {(db.handovers || []).length === 0 && (
+                      <p className="text-center py-12 text-zinc-400 text-xs">Belum ada catatan serah terima shift.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'sop' && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm space-y-3">
@@ -8363,6 +9597,7 @@
               <button onClick={() => setActiveTab('supplies')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'supplies' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Logistik & Perlengkapan</button>
               <button onClick={() => setActiveTab('scheduler')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'scheduler' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Shift & Jadwal Staf</button>
               <button onClick={() => setActiveTab('checklist')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'checklist' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Checklist Harian</button>
+              <button onClick={() => setActiveTab('procure_auto')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'procure_auto' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Restok Otomatis</button>
             </div>
 
             {/* TAB: SUPPLIES */}
@@ -8559,6 +9794,73 @@
                 </div>
               </div>
             )}
+            
+            {activeTab === 'procure_auto' && (
+              <div className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                <h4 className="font-bold text-zinc-800 text-sm mb-4">Rekomendasi Restok Barang Menipis</h4>
+                <p className="text-xs text-zinc-500 mb-4">Sistem mendeteksi produk yang memiliki stok saat ini di bawah batas minimum stok yang telah ditentukan.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                        <th className="p-3 text-left">Nama Produk</th>
+                        <th className="p-3 text-center">Stok Saat Ini</th>
+                        <th className="p-3 text-center">Batas Minimum</th>
+                        <th className="p-3 text-center">Rekomendasi Beli</th>
+                        <th className="p-3 text-right">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {db.products.filter(p => p.active !== false && (p.stock || 0) <= (p.minStock || 5)).map(p => {
+                        const recQty = Math.max(10, (p.minStock || 5) * 2 - (p.stock || 0));
+                        return (
+                          <tr key={p.id} className="hover:bg-zinc-50/50">
+                            <td className="p-3 font-bold text-zinc-700">{p.name}</td>
+                            <td className="p-3 text-center text-rose-600 font-bold">{p.stock} pcs</td>
+                            <td className="p-3 text-center text-zinc-500">{p.minStock || 5} pcs</td>
+                            <td className="p-3 text-center font-bold text-zinc-700">{recQty} pcs</td>
+                            <td className="p-3 text-right">
+                              <button 
+                                onClick={() => {
+                                  const currentDb = getDB();
+                                  const alreadyProposed = currentDb.purchases.some(x => x.productName === p.name && x.status === 'pending');
+                                  if (alreadyProposed) {
+                                    app.addToast('Pengadaan produk ini sudah diajukan & sedang pending', 'info');
+                                    return;
+                                  }
+                                  currentDb.purchases.push({
+                                    id: 'PR' + Date.now(),
+                                    productName: p.name,
+                                    qty: recQty,
+                                    cost: p.cost || p.price / 2 || 0,
+                                    status: 'pending',
+                                    proposedById: app.user?.id,
+                                    proposedByName: app.user?.name,
+                                    feedbackSeen: false,
+                                    type: 'buy',
+                                    createdAt: new Date().toISOString()
+                                  });
+                                  saveDB(currentDb);
+                                  app.refreshDB();
+                                  app.addToast('Berhasil mengajukan restok ' + p.name, 'success');
+                                }}
+                                type="button"
+                                className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded"
+                              >
+                                Ajukan Restok
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {db.products.filter(p => p.active !== false && (p.stock || 0) <= (p.minStock || 5)).length === 0 && (
+                        <tr><td colSpan="5" className="text-center p-8 text-zinc-400">Semua stok produk aman di atas batas minimum.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         );
       };
@@ -8566,10 +9868,12 @@
       const renderKeuangan = () => {
         return (
           <div className="space-y-6 text-left">
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('invoices')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'invoices' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Invoice Pemasok</button>
               <button onClick={() => setActiveTab('expenses')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'expenses' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pengeluaran Manual</button>
               <button onClick={() => setActiveTab('posverify')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'posverify' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Verifikasi Pembayaran</button>
+              <button onClick={() => setActiveTab('petty_cash')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'petty_cash' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kas Kecil (Petty Cash)</button>
+              <button onClick={() => setActiveTab('tax_ppn')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'tax_ppn' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pajak PPN & Setoran</button>
             </div>
 
             {/* TAB: INVOICES */}
@@ -8619,16 +9923,16 @@
                           <tr key={item.id} className="hover:bg-zinc-50/50">
                             <td className="p-3 font-mono font-bold text-sky-750">{item.invNo}</td>
                             <td className="p-3 font-bold text-zinc-700">{item.supplier}</td>
-                            <td className="p-3 text-right font-bold text-zinc-800">Rp {item.amount.toLocaleString('id-ID')}</td>
+                            <td className="p-3 text-right font-bold text-zinc-800 font-mono">Rp {item.amount.toLocaleString('id-ID')}</td>
                             <td className="p-3 text-center text-zinc-500">{item.dueDate}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Lunas' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
                               }`}>{item.status}</span>
                             </td>
                             <td className="p-3 text-right space-x-1">
                               {item.status !== 'Lunas' && (
-                                <button onClick={() => handlePayInvoice(item.id)} className="px-2 py-1 bg-emerald-50 text-emerald-700 font-bold rounded hover:bg-emerald-100">Bayar</button>
+                                <button onClick={() => handlePayInvoice(item.id)} className="px-2 py-1 bg-emerald-50 text-emerald-700 font-bold rounded hover:bg-emerald-100 text-[10px]">Bayar</button>
                               )}
                               <button onClick={() => handleDeleteInvoice(item.id)} className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"><Icon name="trash-2" size={12} /></button>
                             </td>
@@ -8689,10 +9993,10 @@
                       <tbody className="divide-y divide-zinc-100">
                         {expensesList.map(item => (
                           <tr key={item.id} className="hover:bg-zinc-50/50">
-                            <td className="p-3 text-zinc-500">{item.date}</td>
-                            <td className="p-3"><span className="px-2 py-0.5 rounded font-bold bg-amber-50 text-amber-700">{item.category}</span></td>
+                            <td className="p-3 text-zinc-550">{item.date}</td>
+                            <td className="p-3"><span className="px-2 py-0.5 rounded font-bold bg-amber-50 text-amber-700 text-[10px]">{item.category}</span></td>
                             <td className="p-3 text-zinc-650 italic truncate max-w-[200px]">{item.description}</td>
-                            <td className="p-3 text-right font-bold text-zinc-800">Rp {item.amount.toLocaleString('id-ID')}</td>
+                            <td className="p-3 text-right font-bold text-zinc-800 font-mono">Rp {item.amount.toLocaleString('id-ID')}</td>
                             <td className="p-3 text-right">
                               <button onClick={() => handleDeleteExpense(item.id)} className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"><Icon name="trash-2" size={12} /></button>
                             </td>
@@ -8729,12 +10033,12 @@
                       {verificationsList.map(item => (
                         <tr key={item.id} className="hover:bg-zinc-50/50">
                           <td className="p-3 font-mono font-bold text-zinc-500">{item.txId || item.id}</td>
-                          <td className="p-3"><span className="px-2 py-0.5 bg-sky-50 text-sky-700 font-bold rounded uppercase">{item.method}</span></td>
+                          <td className="p-3"><span className="px-2 py-0.5 bg-sky-50 text-sky-700 font-bold rounded uppercase text-[10px]">{item.method}</span></td>
                           <td className="p-3 font-semibold text-zinc-700">{item.customer || 'Pelanggan Umum'}</td>
-                          <td className="p-3 text-right font-bold text-zinc-800">Rp {item.amount.toLocaleString('id-ID')}</td>
+                          <td className="p-3 text-right font-bold text-zinc-800 font-mono">Rp {item.amount.toLocaleString('id-ID')}</td>
                           <td className="p-3 text-center text-zinc-400">{new Date(item.date).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</td>
                           <td className="p-3 text-center">
-                            <span className={`px-2 py-0.5 rounded font-bold ${
+                            <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                               item.status === 'Terverifikasi' ? 'bg-emerald-50 text-emerald-700' :
                               item.status === 'Ditolak' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700 animate-pulse'
                             }`}>{item.status}</span>
@@ -8742,8 +10046,8 @@
                           <td className="p-3 text-right space-x-1">
                             {item.status === 'Menunggu' && (
                               <>
-                                <button onClick={() => handleVerifyPayment(item.id, true)} className="px-2 py-1 bg-emerald-50 text-emerald-700 font-bold rounded hover:bg-emerald-100" title="Verifikasi Lunas">Terima</button>
-                                <button onClick={() => handleVerifyPayment(item.id, false)} className="px-2 py-1 bg-rose-50 text-rose-700 font-bold rounded hover:bg-rose-100" title="Tolak">Tolak</button>
+                                <button onClick={() => handleVerifyPayment(item.id, true)} className="px-2 py-1 bg-emerald-50 text-emerald-700 font-bold rounded hover:bg-emerald-100 text-[10px]" title="Verifikasi Lunas">Terima</button>
+                                <button onClick={() => handleVerifyPayment(item.id, false)} className="px-2 py-1 bg-rose-50 text-rose-700 font-bold rounded hover:bg-rose-100 text-[10px]" title="Tolak">Tolak</button>
                               </>
                             )}
                             {item.status !== 'Menunggu' && (
@@ -8760,6 +10064,9 @@
                 </div>
               </div>
             )}
+
+            {activeTab === 'petty_cash' && renderPettyCashView()}
+            {activeTab === 'tax_ppn' && renderTaxPpnView()}
           </div>
         );
       };
@@ -8767,11 +10074,12 @@
       const renderHR = () => {
         return (
           <div className="space-y-6 text-left">
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('attendance')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'attendance' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Absensi Staf</button>
               <button onClick={() => setActiveTab('leaves')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'leaves' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pengajuan Cuti</button>
-              <button onClick={() => setActiveTab('payroll')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'payroll' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kalkulator Slip Gaji</button>
-              <button onClick={() => setActiveTab('recruits')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'recruits' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Rekrutmen Staf</button>
+              <button onClick={() => setActiveTab('payroll')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'payroll' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kalkulator Gaji</button>
+              <button onClick={() => setActiveTab('recruits')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'recruits' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Rekrutmen</button>
+              <button onClick={() => setActiveTab('kpi')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'kpi' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>KPI & Kinerja</button>
             </div>
 
             {/* TAB: ATTENDANCE */}
@@ -8826,7 +10134,7 @@
                             <td className="p-3 font-bold text-zinc-700">{item.employeeName}</td>
                             <td className="p-3 text-center text-zinc-650">{item.date}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Hadir' ? 'bg-emerald-50 text-emerald-700' :
                                 item.status === 'Sakit' ? 'bg-amber-50 text-amber-700' :
                                 item.status === 'Izin' ? 'bg-sky-50 text-sky-700' : 'bg-rose-50 text-rose-700'
@@ -8898,7 +10206,7 @@
                             <td className="p-3 text-zinc-650">{item.start} s/d {item.end}</td>
                             <td className="p-3 text-zinc-500 italic">{item.reason}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Disetujui' ? 'bg-emerald-50 text-emerald-700' :
                                 item.status === 'Ditolak' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
                               }`}>{item.status}</span>
@@ -8906,8 +10214,8 @@
                             <td className="p-3 text-right space-x-1">
                               {item.status === 'Menunggu' && (
                                 <>
-                                  <button onClick={() => handleApproveLeave(item.id, true)} className="px-2 py-1 bg-emerald-50 text-emerald-700 font-bold rounded hover:bg-emerald-100">Setujui</button>
-                                  <button onClick={() => handleApproveLeave(item.id, false)} className="px-2 py-1 bg-rose-50 text-rose-700 font-bold rounded hover:bg-rose-100">Tolak</button>
+                                  <button onClick={() => handleApproveLeave(item.id, true)} className="px-2 py-1 bg-emerald-50 text-emerald-700 font-bold rounded hover:bg-emerald-100 text-[10px]">Setujui</button>
+                                  <button onClick={() => handleApproveLeave(item.id, false)} className="px-2 py-1 bg-rose-50 text-rose-700 font-bold rounded hover:bg-rose-100 text-[10px]">Tolak</button>
                                 </>
                               )}
                             </td>
@@ -8975,7 +10283,7 @@
 
                 <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
                   {slipResult ? (
-                    <div className="border border-sky-100 bg-sky-50/20 rounded-2xl p-6 relative animate-[scaleIn_0.2s]">
+                    <div className="border border-sky-100 bg-sky-50/20 rounded-2xl p-6 relative">
                       <h4 className="font-bold text-sky-900 text-sm border-b border-sky-100 pb-3 uppercase tracking-wide">Slip Gaji Bulanan - Smile POS</h4>
                       
                       <div className="grid grid-cols-2 gap-4 text-xs my-4 text-zinc-700">
@@ -8990,21 +10298,21 @@
                       </div>
 
                       <div className="border-t border-dashed border-zinc-250 py-3 space-y-2 text-xs">
-                        <div className="flex justify-between"><span>Gaji Pokok</span><span className="font-semibold text-zinc-800">Rp {slipResult.base.toLocaleString('id-ID')}</span></div>
-                        <div className="flex justify-between"><span>Gaji Lembur</span><span className="font-semibold text-zinc-800">Rp {slipResult.overtimePay.toLocaleString('id-ID')}</span></div>
-                        <div className="flex justify-between"><span>Insentif / Bonus</span><span className="font-semibold text-zinc-800">Rp {slipResult.bonus.toLocaleString('id-ID')}</span></div>
-                        <div className="flex justify-between text-rose-600"><span>Potongan BPJS Kesehatan (1%)</span><span>- Rp {slipResult.bpjsKes.toLocaleString('id-ID')}</span></div>
-                        <div className="flex justify-between text-rose-600"><span>Potongan BPJS Ketenagakerjaan (2%)</span><span>- Rp {slipResult.bpjsKet.toLocaleString('id-ID')}</span></div>
+                        <div className="flex justify-between"><span>Gaji Pokok</span><span className="font-semibold text-zinc-800 font-mono">Rp {slipResult.base.toLocaleString('id-ID')}</span></div>
+                        <div className="flex justify-between"><span>Gaji Lembur</span><span className="font-semibold text-zinc-800 font-mono">Rp {slipResult.overtimePay.toLocaleString('id-ID')}</span></div>
+                        <div className="flex justify-between"><span>Insentif / Bonus</span><span className="font-semibold text-zinc-800 font-mono">Rp {slipResult.bonus.toLocaleString('id-ID')}</span></div>
+                        <div className="flex justify-between text-rose-600"><span>Potongan BPJS Kesehatan (1%)</span><span className="font-mono">- Rp {slipResult.bpjsKes.toLocaleString('id-ID')}</span></div>
+                        <div className="flex justify-between text-rose-600"><span>Potongan BPJS Ketenagakerjaan (2%)</span><span className="font-mono">- Rp {slipResult.bpjsKet.toLocaleString('id-ID')}</span></div>
                       </div>
 
                       <div className="border-t border-sky-100 pt-3 flex justify-between font-bold text-sm text-sky-950 bg-sky-100/50 p-3 rounded-xl">
                         <span>GAJI BERSIH (NET)</span>
-                        <span>Rp {slipResult.total.toLocaleString('id-ID')}</span>
+                        <span className="font-mono">Rp {slipResult.total.toLocaleString('id-ID')}</span>
                       </div>
 
                       <div className="flex gap-2.5 mt-5">
                         <button onClick={() => setSlipResult(null)} className="flex-1 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold rounded-xl text-xs transition">Batal</button>
-                        <button onClick={handleSavePayroll} className="flex-1 py-2 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition flex items-center justify-center gap-1"><Icon name="file-check" size={13} />Simpan & Print Slip</button>
+                        <button onClick={handleSavePayroll} className="flex-1 py-2 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs transition flex items-center justify-center gap-1"><Icon name="file-check" size={13} />Simpan Slip</button>
                       </div>
                     </div>
                   ) : (
@@ -9030,9 +10338,9 @@
                                 <tr key={p.id}>
                                   <td className="p-2 font-semibold text-zinc-700">{p.employeeName}</td>
                                   <td className="p-2 text-center text-zinc-500">{p.month}</td>
-                                  <td className="p-2 text-right">Rp {p.base.toLocaleString('id-ID')}</td>
-                                  <td className="p-2 text-right text-rose-600">-Rp {p.deductions.toLocaleString('id-ID')}</td>
-                                  <td className="p-2 text-right font-bold text-zinc-800">Rp {p.total.toLocaleString('id-ID')}</td>
+                                  <td className="p-2 text-right font-mono">Rp {p.base.toLocaleString('id-ID')}</td>
+                                  <td className="p-2 text-right text-rose-600 font-mono">-Rp {p.deductions.toLocaleString('id-ID')}</td>
+                                  <td className="p-2 text-right font-bold text-zinc-800 font-mono">Rp {p.total.toLocaleString('id-ID')}</td>
                                 </tr>
                               ))}
                               {payrollList.length === 0 && (
@@ -9101,7 +10409,7 @@
                             <td className="p-3 text-zinc-500 font-mono">{item.phone}</td>
                             <td className="p-3 text-zinc-650 max-w-[180px] truncate" title={item.notes}>{item.notes}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Diterima' ? 'bg-emerald-50 text-emerald-700' :
                                 item.status === 'Interview' ? 'bg-sky-50 text-sky-700' :
                                 item.status === 'Ditolak' ? 'bg-rose-50 text-rose-700' : 'bg-zinc-100 text-zinc-600'
@@ -9126,6 +10434,137 @@
                 </div>
               </div>
             )}
+
+            {/* TAB: KPI */}
+            {activeTab === 'kpi' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Input Penilaian Kinerja (KPI)</h4>
+                  <form onSubmit={handleAddStaffKPI} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Pilih Karyawan</label>
+                      <select
+                        value={kpiEmployeeId}
+                        onChange={e => setKpiEmployeeId(e.target.value)}
+                        required
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none text-sm focus:bg-white"
+                      >
+                        <option value="">-- Pilih Staf --</option>
+                        {staffList.map(s => (
+                          <option key={s.id} value={s.id}>{s.name} ({s.roleLabel || s.role})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Kedisiplinan / Punctuality (1-5)</label>
+                      <select
+                        value={kpiPunctuality}
+                        onChange={e => setKpiPunctuality(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                      >
+                        <option value="5">⭐⭐⭐⭐⭐ (5 - Sangat Bagus)</option>
+                        <option value="4">⭐⭐⭐⭐ (4 - Bagus)</option>
+                        <option value="3">⭐⭐⭐ (3 - Cukup)</option>
+                        <option value="2">⭐⭐ (2 - Kurang)</option>
+                        <option value="1">⭐ (1 - Buruk)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Pelayanan Pelanggan (1-5)</label>
+                      <select
+                        value={kpiService}
+                        onChange={e => setKpiService(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                      >
+                        <option value="5">⭐⭐⭐⭐⭐ (5 - Sangat Bagus)</option>
+                        <option value="4">⭐⭐⭐⭐ (4 - Bagus)</option>
+                        <option value="3">⭐⭐⭐ (3 - Cukup)</option>
+                        <option value="2">⭐⭐ (2 - Kurang)</option>
+                        <option value="1">⭐ (1 - Buruk)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Akurasi Transaksi / Kerja (1-5)</label>
+                      <select
+                        value={kpiAccuracy}
+                        onChange={e => setKpiAccuracy(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                      >
+                        <option value="5">⭐⭐⭐⭐⭐ (5 - Sangat Bagus)</option>
+                        <option value="4">⭐⭐⭐⭐ (4 - Bagus)</option>
+                        <option value="3">⭐⭐⭐ (3 - Cukup)</option>
+                        <option value="2">⭐⭐ (2 - Kurang)</option>
+                        <option value="1">⭐ (1 - Buruk)</option>
+                      </select>
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                    >
+                      Simpan Penilaian
+                    </button>
+                  </form>
+                </div>
+
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Tabel Kinerja & Rating KPI Pegawai</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                          <th className="p-3 text-left">Nama Staf</th>
+                          <th className="p-3 text-left">Jabatan</th>
+                          <th className="p-3 text-center">Disiplin</th>
+                          <th className="p-3 text-center">Pelayanan</th>
+                          <th className="p-3 text-center">Akurasi</th>
+                          <th className="p-3 text-center font-bold">Rata-Rata</th>
+                          <th className="p-3 text-right">Rater / Tanggal</th>
+                          <th className="p-3 text-right">Aksi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-100">
+                        {(db.staffKPI || []).map(item => (
+                          <tr key={item.id} className="hover:bg-zinc-50/50">
+                            <td className="p-3 font-bold text-zinc-700">{item.employeeName}</td>
+                            <td className="p-3 text-zinc-500 capitalize">{item.employeeRole}</td>
+                            <td className="p-3 text-center font-bold text-zinc-650">{item.punctuality}/5</td>
+                            <td className="p-3 text-center font-bold text-zinc-650">{item.service}/5</td>
+                            <td className="p-3 text-center font-bold text-zinc-650">{item.accuracy}/5</td>
+                            <td className="p-3 text-center">
+                              <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
+                                item.average >= 4.0 ? 'bg-emerald-50 text-emerald-700' :
+                                item.average >= 3.0 ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-700'
+                              }`}>
+                                {item.average}
+                              </span>
+                            </td>
+                            <td className="p-3 text-right text-zinc-455">
+                              <p className="font-semibold text-zinc-700">{item.raterName}</p>
+                              <p className="text-[10px] text-zinc-400">{item.date}</p>
+                            </td>
+                            <td className="p-3 text-right">
+                              <button
+                                onClick={() => handleDeleteStaffKPI(item.id)}
+                                className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"
+                              >
+                                <Icon name="trash-2" size={12} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {(db.staffKPI || []).length === 0 && (
+                          <tr>
+                            <td colSpan="8" className="text-center p-8 text-zinc-400">
+                              Belum ada data penilaian KPI.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       };
@@ -9133,9 +10572,10 @@
       const renderMarketing = () => {
         return (
           <div className="space-y-6 text-left">
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('coupons')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'coupons' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kupon Diskon POS</button>
               <button onClick={() => setActiveTab('crm')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'crm' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>CRM & Prospek Pelanggan</button>
+              <button onClick={() => setActiveTab('bundling')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'bundling' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Paket Bundling Combo</button>
             </div>
 
             {/* TAB: COUPONS */}
@@ -9183,11 +10623,11 @@
                           <tr key={item.id} className="hover:bg-zinc-50/50">
                             <td className="p-3 font-mono font-bold text-sky-750 text-sm">{item.code}</td>
                             <td className="p-3 text-zinc-650 capitalize">{item.type === 'percent' ? 'Persentase (%)' : 'Nominal Potongan'}</td>
-                            <td className="p-3 text-right font-bold text-zinc-800">
+                            <td className="p-3 text-right font-bold text-zinc-800 font-mono">
                               {item.type === 'percent' ? `${item.value}%` : `Rp ${item.value.toLocaleString('id-ID')}`}
                             </td>
                             <td className="p-3 text-center">
-                              <button onClick={() => handleToggleCoupon(item.id)} className={`px-2 py-0.5 rounded font-bold ${
+                              <button onClick={() => handleToggleCoupon(item.id)} className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.active ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-150 text-zinc-500'
                               }`}>{item.active ? 'Aktif' : 'Nonaktif'}</button>
                             </td>
@@ -9260,7 +10700,7 @@
                             <td className="p-3 text-zinc-500 font-mono">{item.phone}</td>
                             <td className="p-3 text-zinc-650 max-w-[200px] truncate" title={item.notes}>{item.notes}</td>
                             <td className="p-3 text-center">
-                              <span className={`px-2 py-0.5 rounded font-bold ${
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
                                 item.status === 'Deal' ? 'bg-emerald-50 text-emerald-700' :
                                 item.status === 'Negosiasi' ? 'bg-sky-50 text-sky-700' :
                                 item.status === 'Batal' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
@@ -9286,6 +10726,154 @@
                 </div>
               </div>
             )}
+
+            {/* TAB: BUNDLING */}
+            {activeTab === 'bundling' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm space-y-4">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-2">Buat Paket Bundling Baru</h4>
+                  <form onSubmit={handleSaveBundle} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Nama Paket Combo</label>
+                      <input
+                        type="text"
+                        value={bundleName}
+                        onChange={e => setBundleName(e.target.value)}
+                        required
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm"
+                        placeholder="Paket Kenyang A, Combo Ramadhan..."
+                      />
+                    </div>
+                    
+                    <div className="bg-zinc-50 p-4 border border-zinc-200 rounded-2xl space-y-3">
+                      <label className="block text-xs font-bold text-zinc-650 uppercase">Pilih Produk & Qty</label>
+                      <div className="flex gap-2">
+                        <select
+                          value={bundleProductSelect}
+                          onChange={e => setBundleProductSelect(e.target.value)}
+                          className="flex-1 px-2 py-1 bg-white border border-zinc-200 rounded-lg text-xs"
+                        >
+                          <option value="">-- Pilih Produk --</option>
+                          {db.products.filter(p => p.active !== false).map(p => (
+                            <option key={p.id} value={p.id}>{p.name} (Rp {p.price?.toLocaleString('id-ID')})</option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          value={bundleProductQty}
+                          onChange={e => setBundleProductQty(e.target.value)}
+                          min="1"
+                          className="w-16 px-2 py-1 bg-white border border-zinc-200 rounded-lg text-xs font-mono text-center"
+                          placeholder="Qty"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddBundleProduct}
+                          className="px-3 bg-zinc-900 text-white rounded-lg text-xs font-bold hover:bg-zinc-800"
+                        >
+                          Tambah
+                        </button>
+                      </div>
+
+                      <div className="space-y-1.5 text-xs">
+                        {bundleProducts.map(p => (
+                          <div key={p.productId} className="flex justify-between items-center bg-white border border-zinc-150 px-2 py-1 rounded-lg">
+                            <span className="font-semibold text-zinc-700">{p.name} ({p.qty}x)</span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveBundleProduct(p.productId)}
+                              className="text-rose-600 hover:text-rose-800 font-bold"
+                            >
+                              Hapus
+                            </button>
+                          </div>
+                        ))}
+                        {bundleProducts.length === 0 && (
+                          <p className="text-[10px] text-zinc-400 italic">Belum ada produk ditambahkan ke bundel.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Harga Combo Bundling (Rp)</label>
+                      <input
+                        type="number"
+                        value={bundlePrice}
+                        onChange={e => setBundlePrice(e.target.value)}
+                        required
+                        min="1"
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white text-sm"
+                        placeholder="0"
+                      />
+                    </div>
+                    
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                    >
+                      Simpan Paket Bundling
+                    </button>
+                  </form>
+                </div>
+
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Daftar Paket Bundling Promo</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                          <th className="p-3 text-left">Nama Paket</th>
+                          <th className="p-3 text-left">Daftar Produk</th>
+                          <th className="p-3 text-right">Harga Combo</th>
+                          <th className="p-3 text-center">Status</th>
+                          <th className="p-3 text-right">Aksi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-100">
+                        {(db.productBundles || []).map(item => (
+                          <tr key={item.id} className="hover:bg-zinc-50/50">
+                            <td className="p-3 font-bold text-zinc-700">{item.name}</td>
+                            <td className="p-3 font-mono text-[10px] text-zinc-650">
+                              <ul className="list-disc list-inside space-y-0.5">
+                                {item.products?.map(p => (
+                                  <li key={p.productId}>{p.name} ({p.qty} pcs)</li>
+                                ))}
+                              </ul>
+                            </td>
+                            <td className="p-3 text-right font-bold text-emerald-600 font-mono">Rp {item.comboPrice?.toLocaleString('id-ID')}</td>
+                            <td className="p-3 text-center">
+                              <button
+                                onClick={() => handleToggleBundle(item.id)}
+                                className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                  item.active ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-150 text-zinc-500'
+                                }`}
+                              >
+                                {item.active ? 'Aktif' : 'Nonaktif'}
+                              </button>
+                            </td>
+                            <td className="p-3 text-right">
+                              <button
+                                onClick={() => handleDeleteBundle(item.id)}
+                                className="p-1 bg-rose-50 text-rose-600 rounded hover:bg-rose-100"
+                              >
+                                <Icon name="trash-2" size={12} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {(db.productBundles || []).length === 0 && (
+                          <tr>
+                            <td colSpan="5" className="text-center p-8 text-zinc-400">
+                              Belum ada paket bundling terdaftar.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       };
@@ -9294,11 +10882,115 @@
         const ledgerList = (db.stockLedger || []).sort((a, b) => new Date(b.date) - new Date(a.date));
         return (
           <div className="space-y-6 text-left">
-            <div className="flex border-b border-zinc-200 gap-4 mb-4">
+            <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
+              <button onClick={() => setActiveTab('receipts')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'receipts' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Penerimaan Barang</button>
               <button onClick={() => setActiveTab('opname')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'opname' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Stock Opname</button>
-              <button onClick={() => setActiveTab('ledger')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'ledger' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-sky-600'}`}>Mutasi Kartu Stok</button>
+              <button onClick={() => setActiveTab('ledger')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'ledger' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Mutasi Kartu Stok</button>
               <button onClick={() => setActiveTab('damaged')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'damaged' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pencatatan Barang Rusak</button>
             </div>
+
+            {/* TAB: RECEIPTS */}
+            {activeTab === 'receipts' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="bg-white rounded-2xl border border-zinc-200 p-5 h-fit shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Penerimaan Barang Supplier</h4>
+                  <form onSubmit={handleAddGoodsReceipt} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Pilih Produk</label>
+                      <select
+                        value={receiptProduct}
+                        onChange={e => setReceiptProduct(e.target.value)}
+                        required
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white"
+                      >
+                        <option value="">-- Pilih Produk --</option>
+                        {db.products.filter(p => p.active !== false).map(p => (
+                          <option key={p.id} value={p.id}>{p.name} (Stok saat ini: {p.stock} pcs)</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Jumlah Masuk (Qty)</label>
+                        <input
+                          type="number"
+                          value={receiptQty}
+                          onChange={e => setReceiptQty(e.target.value)}
+                          required
+                          min="1"
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-mono"
+                          placeholder="0"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Nama Supplier</label>
+                        <input
+                          type="text"
+                          value={receiptSupplier}
+                          onChange={e => setReceiptSupplier(e.target.value)}
+                          required
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white font-semibold"
+                          placeholder="PT Pemasok Utama"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-zinc-500 uppercase mb-1">Catatan Tambahan</label>
+                      <input
+                        type="text"
+                        value={receiptNotes}
+                        onChange={e => setReceiptNotes(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:bg-white"
+                        placeholder="Nomor DO, kondisi box baik, dll..."
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-zinc-900 text-white rounded-xl font-bold text-xs hover:bg-zinc-800 transition"
+                    >
+                      Terima & Tambah Stok
+                    </button>
+                  </form>
+                </div>
+
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                  <h4 className="font-bold text-zinc-800 text-sm mb-4">Log Penerimaan Barang Masuk (Goods Receipt)</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-zinc-50 text-zinc-500 border-b border-zinc-200">
+                          <th className="p-3 text-left">Tanggal</th>
+                          <th className="p-3 text-left">Nama Produk</th>
+                          <th className="p-3 text-center">Jumlah Masuk</th>
+                          <th className="p-3 text-left">Pemasok / Supplier</th>
+                          <th className="p-3 text-left">Catatan</th>
+                          <th className="p-3 text-right">Penerima</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-100">
+                        {(db.goodsReceipts || []).slice().reverse().map(item => (
+                          <tr key={item.id} className="hover:bg-zinc-50/50">
+                            <td className="p-3 text-zinc-550">{item.date}</td>
+                            <td className="p-3 font-bold text-zinc-700">{item.productName}</td>
+                            <td className="p-3 text-center font-mono font-bold text-emerald-600">+{item.qty} pcs</td>
+                            <td className="p-3 font-bold text-zinc-700">{item.supplier}</td>
+                            <td className="p-3 text-zinc-500 italic">{item.notes || '-'}</td>
+                            <td className="p-3 text-right text-zinc-650 font-semibold">{item.receivedBy}</td>
+                          </tr>
+                        ))}
+                        {(db.goodsReceipts || []).length === 0 && (
+                          <tr>
+                            <td colSpan="6" className="text-center p-8 text-zinc-400">
+                              Belum ada log penerimaan barang masuk.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* TAB: OPNAME */}
             {activeTab === 'opname' && (
@@ -10058,6 +11750,120 @@
         const body = encodeURIComponent(getReceiptText());
         window.open(`mailto:${mail}?subject=${subject}&body=${body}`, '_blank');
       };
+      
+      const printReceipt = () => {
+        const printWindow = window.open('', '_blank', 'width=350,height=600');
+        if (!printWindow) {
+          alert('Gagal membuka jendela cetak. Mohon aktifkan izin pop-up di browser Anda.');
+          return;
+        }
+        
+        let itemsHtml = '';
+        transaction.items.forEach(item => {
+          itemsHtml += '  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">' +
+                       '    <span style="flex: 1; text-align: left; padding-right: 4px;">' + item.name + ' (' + item.qty + 'x)</span>' +
+                       '    <span style="text-align: right; font-weight: bold;">Rp ' + (item.qty * item.effectivePrice).toLocaleString('id-ID') + '</span>' +
+                       '  </div>';
+        });
+
+        let memberHtml = '';
+        if (transaction.memberName) {
+          memberHtml = '<div style="margin-bottom: 4px;">Pelanggan: ' + transaction.memberName + '</div>';
+        }
+
+        let taxHtml = '';
+        if (transaction.tax > 0) {
+          taxHtml = '  <div style="display: flex; justify-content: space-between;">' +
+                    '    <span>PPN (10%):</span>' +
+                    '    <span>Rp ' + transaction.tax.toLocaleString('id-ID') + '</span>' +
+                    '  </div>';
+        }
+
+        let discountHtml = '';
+        if (transaction.discount > 0) {
+          discountHtml = '  <div style="display: flex; justify-content: space-between;">' +
+                         '    <span>Diskon:</span>' +
+                         '    <span>-Rp ' + transaction.discount.toLocaleString('id-ID') + '</span>' +
+                         '  </div>';
+        }
+
+        const dateStr = new Date(transaction.date).toLocaleString('id-ID');
+
+        printWindow.document.write(
+          '<html>' +
+          '<head>' +
+          '  <title>Cetak Nota - Smile POS</title>' +
+          '  <style>' +
+          '    @page { size: auto; margin: 0mm; }' +
+          '    body {' +
+          '      font-family: \'Courier New\', Courier, monospace;' +
+          '      font-size: 11px;' +
+          '      line-height: 1.4;' +
+          '      width: 58mm;' +
+          '      margin: 0;' +
+          '      padding: 8px;' +
+          '      box-sizing: border-box;' +
+          '      color: #000;' +
+          '      background: #fff;' +
+          '    }' +
+          '    .text-center { text-align: center; }' +
+          '    .text-right { text-align: right; }' +
+          '    .divider { border-top: 1px dashed #000; margin: 6px 0; }' +
+          '    .bold { font-weight: bold; }' +
+          '    .title { font-size: 13px; font-weight: bold; margin-bottom: 2px; }' +
+          '  </style>' +
+          '</head>' +
+          '<body>' +
+          '  <div class="text-center title">SMILE POS</div>' +
+          '  <div class="text-center" style="font-size: 9px; margin-bottom: 6px; letter-spacing: 1px;">SOLUSI KASIR PINTAR</div>' +
+          '  <div style="font-size: 9px; margin-bottom: 4px;">' +
+          '    <div>No. Nota: ' + transaction.id + '</div>' +
+          '    <div>Tanggal : ' + dateStr + '</div>' +
+          '    <div>Kasir   : ' + transaction.cashier + '</div>' +
+          '    ' + memberHtml +
+          '  </div>' +
+          '  <div class="divider"></div>' +
+          '  <div style="font-size: 10px;">' +
+          '    ' + itemsHtml +
+          '  </div>' +
+          '  <div class="divider"></div>' +
+          '  <div style="font-size: 10px;">' +
+          '    <div style="display: flex; justify-content: space-between;">' +
+          '      <span>Subtotal:</span>' +
+          '      <span>Rp ' + transaction.subtotal.toLocaleString('id-ID') + '</span>' +
+          '    </div>' +
+          '    ' + taxHtml +
+          '    ' + discountHtml +
+          '    <div style="display: flex; justify-content: space-between; margin-top: 3px;" class="bold">' +
+          '      <span>TOTAL:</span>' +
+          '      <span>Rp ' + transaction.total.toLocaleString('id-ID') + '</span>' +
+          '    </div>' +
+          '    <div class="divider"></div>' +
+          '    <div style="display: flex; justify-content: space-between;">' +
+          '      <span>Bayar (' + transaction.method.toUpperCase() + '):</span>' +
+          '      <span>Rp ' + transaction.payment.toLocaleString('id-ID') + '</span>' +
+          '    </div>' +
+          '    <div style="display: flex; justify-content: space-between;">' +
+          '      <span>Kembali:</span>' +
+          '      <span>Rp ' + transaction.change.toLocaleString('id-ID') + '</span>' +
+          '    </div>' +
+          '  </div>' +
+          '  <div class="divider"></div>' +
+          '  <div class="text-center" style="font-size: 9px; margin-top: 8px;">' +
+          '    Terima kasih telah berbelanja!<br>Smile POS - Solusi Kasir Pintar' +
+          '  </div>' +
+          '  <script>' +
+          '    window.onload = function() {' +
+          '      window.focus();' +
+          '      window.print();' +
+          '      setTimeout(function() { window.close(); }, 500);' +
+          '    };' +
+          '  <\/script>' +
+          '</body>' +
+          '</html>'
+        );
+        printWindow.document.close();
+      };
 
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out] no-print">
@@ -10072,7 +11878,7 @@
             
             <div className="p-6 space-y-4">
               <button 
-                onClick={() => window.print()} 
+                onClick={printReceipt} 
                 className="w-full py-3.5 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition shadow-md flex items-center justify-center gap-2"
               >
                 <Icon name="printer" size={18} /> Cetak Struk Fisik
