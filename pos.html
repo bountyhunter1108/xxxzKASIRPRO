@@ -30,6 +30,11 @@
         fetch('http://localhost:9999/error?type=' + encodeURIComponent(type) + '&msg=' + encodeURIComponent(msg)).catch(function(){});
       }
       window.addEventListener('error', function(e) {
+        // Abaikan cross-origin Script error generik tanpa info nama file (biasanya dari ekstensi browser / adblocker / CDN eksternal)
+        if (e.message === 'Script error.' && !e.filename) {
+          console.warn('Diabaikan: generic cross-origin Script error dari pihak ketiga:', e);
+          return;
+        }
         showDiagnostics(e.message + '\nat ' + e.filename + ':' + e.lineno + ':' + e.colno + '\n' + (e.error ? e.error.stack : ''), 'Window Error');
       });
       window.addEventListener('unhandledrejection', function(e) {
