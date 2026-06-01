@@ -7,6 +7,7 @@
   <meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>POS System Pro</title>
+  <link rel="icon" type="image/jpeg" href="./logo.jpg">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1525,8 +1526,8 @@
         <div className="min-h-screen flex items-center justify-center bg-zinc-100 p-4">
           <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden animate-[scaleIn_0.3s_ease-out]">
             <div className="bg-sky-600 p-8 text-center text-white">
-              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm">
-                <Icon name="shopping-bag" size={32} color="white" />
+              <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-4 overflow-hidden border border-white/20 shadow-inner">
+                <img src="./logo.jpg" alt="Logo" className="w-full h-full object-cover" />
               </div>
               <h1 className="text-2xl font-bold">Smile POS</h1>
               <p className="text-sky-100 mt-1 text-sm">Sistem Kasir Pintar</p>
@@ -13023,8 +13024,8 @@
         <aside className={`${sidebar ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 z-40 w-64 bg-zinc-900 text-white transition-transform duration-300 flex flex-col no-print`}>
           <div className="h-16 flex items-center px-6 border-b border-zinc-800 justify-between md:justify-start">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-sky-500 rounded-lg flex items-center justify-center">
-                <Icon name="shopping-bag" size={18} color="white" />
+              <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center overflow-hidden border border-zinc-700">
+                <img src="./logo.jpg" alt="Logo" className="w-full h-full object-cover" />
               </div>
               <span className="font-bold text-lg tracking-wide">SMILE POS</span>
             </div>
