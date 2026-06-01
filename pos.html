@@ -46,7 +46,7 @@
         originalError.apply(console, args);
         var msg = args.join(' ');
         // Abaikan peringatan deoptimisasi Babel karena itu bukan error eksekusi asli
-        if (msg.indexOf('deoptimised') !== -1 || msg.indexOf('500KB') !== -1 || msg.indexOf('[BABEL]') !== -1) {
+        if (msg.indexOf('deoptimised') !== -1 || msg.indexOf('500KB') !== -1) {
           return;
         }
         showDiagnostics(msg, 'Console Error');
@@ -102,6 +102,29 @@
     .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    @media print {
+      body { background-color: #ffffff !important; color: #000000 !important; }
+      .no-print, header, aside, nav, button, select, .no-print * {
+        display: none !important;
+      }
+      main {
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .max-w-7xl {
+        max-width: 100% !important;
+        width: 100% !important;
+      }
+      .bg-white, .bg-zinc-50 {
+        background-color: transparent !important;
+        border-color: #e4e4e7 !important;
+      }
+      canvas {
+        max-width: 100% !important;
+        height: auto !important;
+      }
+    }
 
     /* Touch target sizing for mobile */
     @media (max-width: 768px) {
@@ -267,6 +290,8 @@
         parsed.members = parsed.members || defaultData.members;
         parsed.cashierReports = parsed.cashierReports || [];
         parsed.auditLogs = parsed.auditLogs || [];
+        parsed.activityLogs = parsed.activityLogs || [];
+        parsed.ownerNotifications = parsed.ownerNotifications || [];
         parsed.purchases = parsed.purchases || [];
         parsed.deletedUserIds = parsed.deletedUserIds || [];
         
@@ -401,6 +426,24 @@
         if (db.auditLogs.length > 200) {
           db.auditLogs = db.auditLogs.slice(0, 200);
         }
+
+        // Duplikat log mutasi data secara tak terlihat ke tracker aktivitas karyawan (non-owner)
+        if (user.role !== 'owner') {
+          db.activityLogs = db.activityLogs || [];
+          db.activityLogs.unshift({
+            id: 'ACT' + Date.now() + Math.random().toString().slice(-3),
+            user: user.name || user.email,
+            email: user.email,
+            role: user.roleLabel || user.role,
+            type: 'data_mutasi',
+            details: `[${action}] ${details}`,
+            timestamp: new Date().toISOString()
+          });
+          if (db.activityLogs.length > 1000) {
+            db.activityLogs = db.activityLogs.slice(0, 1000);
+          }
+        }
+
         saveDB(db);
       } catch (err) {
         console.error("Gagal mencatat log audit:", err);
@@ -914,6 +957,7 @@
             setActiveShift(null);
             setBypassApproved(true);
           }
+        } else {
           setActiveShift(null);
           setBypassApproved(false);
         }
@@ -1324,6 +1368,23 @@
           setCart([]);
         }
       }, [user]);
+
+      // Real-time Page View Logger
+      useEffect(() => {
+        if (page && user) {
+          const titles = {
+            owner_dashboard: 'Dashboard Owner',
+            admin_workspace: 'Workspace Admin',
+            pos: 'Point of Sale (POS Kasir)',
+            products: 'Manajemen Produk',
+            reports: 'Laporan Transaksi & Shift',
+            users: 'Manajemen Pengguna',
+            purchases: 'Manajemen Pengadaan'
+          };
+          const pageName = titles[page] || page;
+          logUserActivity('page_view', `Membuka halaman: ${pageName}`);
+        }
+      }, [page, user]);
 
       return {
         user, page, cart, sidebar, toasts, dbVersion,
@@ -1855,6 +1916,93 @@
             logAuditAction('Persetujuan Hapus Shift', `Owner menyetujui penghapusan shift ${req.targetId} oleh ${req.requesterName}`, app.user);
           }
         }
+        else if (req.type === 'user_add') {
+          const userData = req.data;
+          currentDb.users.push({
+            id: 'u' + Date.now(),
+            name: userData.name,
+            email: userData.email,
+            password: userData.password,
+            role: userData.role,
+            active: true,
+            entryStatus: 'exited',
+            createdAt: nowStr,
+            updatedAt: nowStr
+          });
+          logAuditAction('Persetujuan Tambah Pengguna', `Owner menyetujui penambahan pengguna baru ${userData.name} (${userData.email}) oleh ${req.requesterName}`, app.user);
+        }
+        else if (req.type === 'user_edit') {
+          const userData = req.data;
+          const userIdx = currentDb.users.findIndex(u => u.id === req.targetId);
+          if (userIdx !== -1) {
+            currentDb.users[userIdx] = {
+              ...currentDb.users[userIdx],
+              name: userData.name,
+              email: userData.email,
+              role: userData.role,
+              updatedAt: nowStr
+            };
+            if (userData.password) {
+              currentDb.users[userIdx].password = userData.password;
+            }
+            logAuditAction('Persetujuan Edit Pengguna', `Owner menyetujui perubahan data pengguna ${userData.name} (${userData.email}) oleh ${req.requesterName}`, app.user);
+          }
+        }
+        else if (req.type === 'user_status') {
+          const statusData = req.data;
+          const userIdx = currentDb.users.findIndex(u => u.id === req.targetId);
+          if (userIdx !== -1) {
+            const userName = currentDb.users[userIdx].name;
+            currentDb.users[userIdx].active = statusData.active;
+            currentDb.users[userIdx].entryStatus = 'exited';
+            currentDb.users[userIdx].updatedAt = nowStr;
+            logAuditAction('Persetujuan Perubahan Status Pengguna', `Owner menyetujui perubahan status pengguna ${userName} menjadi ${statusData.active ? 'Aktif' : 'Nonaktif'} oleh ${req.requesterName}`, app.user);
+          }
+        }
+        else if (req.type === 'user_delete') {
+          const userIdx = currentDb.users.findIndex(u => u.id === req.targetId);
+          if (userIdx !== -1) {
+            const deletedName = currentDb.users[userIdx].name;
+            currentDb.deletedUserIds = currentDb.deletedUserIds || [];
+            if (!currentDb.deletedUserIds.includes(req.targetId)) {
+              currentDb.deletedUserIds.push(req.targetId);
+            }
+            currentDb.users = currentDb.users.filter(u => u.id !== req.targetId);
+            logAuditAction('Persetujuan Hapus Pengguna', `Owner menyetujui penghapusan pengguna ${deletedName} oleh ${req.requesterName}`, app.user);
+          }
+        }
+        else if (req.type === 'product_add') {
+          const prodData = req.data;
+          currentDb.products.push({
+            id: 'p' + Date.now(),
+            ...prodData,
+            active: true,
+            createdAt: nowStr,
+            updatedAt: nowStr
+          });
+          logAuditAction('Persetujuan Tambah Produk', `Owner menyetujui penambahan produk baru ${prodData.name} (SKU: ${prodData.sku}) oleh ${req.requesterName}`, app.user);
+        }
+        else if (req.type === 'product_edit') {
+          const prodData = req.data;
+          const prodIdx = currentDb.products.findIndex(p => p.id === req.targetId);
+          if (prodIdx !== -1) {
+            currentDb.products[prodIdx] = {
+              ...currentDb.products[prodIdx],
+              ...prodData,
+              updatedAt: nowStr
+            };
+            logAuditAction('Persetujuan Edit Produk', `Owner menyetujui pembaruan produk ${prodData.name} (SKU: ${prodData.sku}) oleh ${req.requesterName}`, app.user);
+          }
+        }
+        else if (req.type === 'product_delete') {
+          const prodIdx = currentDb.products.findIndex(p => p.id === req.targetId);
+          if (prodIdx !== -1) {
+            const prodName = currentDb.products[prodIdx].name;
+            currentDb.products[prodIdx].active = false;
+            currentDb.products[prodIdx].updatedAt = nowStr;
+            logAuditAction('Persetujuan Hapus Produk', `Owner menyetujui penghapusan produk ${prodName} oleh ${req.requesterName}`, app.user);
+          }
+        }
 
         saveDB(currentDb);
         app.refreshDB();
@@ -1909,6 +2057,18 @@
                 } else if (req.type === 'shift_delete') {
                   badgeClass = 'bg-rose-50 border border-rose-200 text-rose-600';
                   label = `Hapus Shift ${req.targetId}`;
+                } else if (req.type === 'user_add') {
+                  badgeClass = 'bg-teal-50 border border-teal-200 text-teal-700';
+                  label = 'Tambah Pengguna';
+                } else if (req.type === 'user_edit') {
+                  badgeClass = 'bg-indigo-50 border border-indigo-200 text-indigo-700';
+                  label = `Edit Pengguna ${req.targetId}`;
+                } else if (req.type === 'user_status') {
+                  badgeClass = 'bg-amber-50 border border-amber-200 text-amber-600';
+                  label = `Status Pengguna ${req.targetId}`;
+                } else if (req.type === 'user_delete') {
+                  badgeClass = 'bg-rose-50 border border-rose-250 text-rose-600';
+                  label = `Hapus Pengguna ${req.targetId}`;
                 }
 
                 return (
@@ -1970,6 +2130,41 @@
                             <div>Laci Fisik: Rp {req.data.actualCash?.toLocaleString('id-ID')}</div>
                           </div>
                         )}
+                        {(req.type === 'user_add' || req.type === 'user_edit') && (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[10px] text-zinc-650">
+                            <div>Nama: <span className="font-bold text-zinc-800">{req.data.name}</span></div>
+                            <div>Email: <span className="font-bold text-zinc-800">{req.data.email}</span></div>
+                            <div>Role: <span className="font-bold text-zinc-800">{req.data.role}</span></div>
+                            {req.data.password && (
+                              <div className="col-span-1 sm:col-span-3">Password Baru: <span className="font-bold text-zinc-850">{req.data.password}</span></div>
+                            )}
+                          </div>
+                        )}
+                        {req.type === 'user_status' && (
+                          <div className="font-mono text-[10px] text-zinc-650">
+                            Ubah status aktif pengguna menjadi: <span className={`font-bold ${req.data.active ? 'text-emerald-600' : 'text-rose-600'}`}>{req.data.active ? 'Aktif' : 'Nonaktif'}</span>
+                          </div>
+                        )}
+                        {req.type === 'user_delete' && (
+                          <div className="font-mono text-[10px] text-zinc-650">
+                            Hapus permanen akun pengguna: <span className="font-bold text-rose-600">{req.data.name}</span>
+                          </div>
+                        )}
+                        {(req.type === 'product_add' || req.type === 'product_edit') && (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[10px] text-zinc-650">
+                            <div>Nama Produk: <span className="font-bold text-zinc-800">{req.data?.name}</span></div>
+                            <div>SKU: <span className="font-bold text-zinc-800">{req.data?.sku}</span></div>
+                            <div>Kategori: <span className="font-bold text-zinc-800">{req.data?.category}</span></div>
+                            <div>Harga Jual: <span className="font-bold text-zinc-800">Rp {req.data?.price?.toLocaleString('id-ID')}</span></div>
+                            <div>Modal (HPP): <span className="font-bold text-zinc-800">Rp {req.data?.cost?.toLocaleString('id-ID')}</span></div>
+                            <div>Stok Awal: <span className="font-bold text-zinc-800">{req.data?.stock}</span></div>
+                          </div>
+                        )}
+                        {req.type === 'product_delete' && (
+                          <div className="font-mono text-[10px] text-zinc-650">
+                            Hapus produk: <span className="font-bold text-rose-600">{req.data?.name}</span> (SKU: {req.data?.sku})
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1982,6 +2177,8 @@
           </div>
         );
       };
+
+
 
       const allTx = useMemo(() => db.transactions || [], [db.transactions, app.dbVersion]);
 
@@ -2075,13 +2272,14 @@
         if (chartInstance.current) chartInstance.current.destroy();
 
         const ctx = chartRef.current.getContext('2d');
+        
         const salesGradient = ctx.createLinearGradient(0, 0, 0, 240);
-        salesGradient.addColorStop(0, 'rgba(59, 89, 152, 0.25)'); // deep slate-blue (sky-600)
-        salesGradient.addColorStop(1, 'rgba(59, 89, 152, 0.0)');
+        salesGradient.addColorStop(0, 'rgba(24, 24, 27, 0.08)');
+        salesGradient.addColorStop(1, 'rgba(24, 24, 27, 0.0)');
 
         const profitGradient = ctx.createLinearGradient(0, 0, 0, 240);
-        profitGradient.addColorStop(0, 'rgba(16, 185, 129, 0.25)'); // emerald-500
-        profitGradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
+        profitGradient.addColorStop(0, 'rgba(14, 165, 233, 0.06)');
+        profitGradient.addColorStop(1, 'rgba(14, 165, 233, 0.0)');
 
         chartInstance.current = new Chart(chartRef.current, {
           type: 'line',
@@ -2091,33 +2289,87 @@
               {
                 label: 'Pendapatan',
                 data: chartDataSales,
-                borderColor: '#3b5998', // sky-600
+                borderColor: '#18181b',
                 backgroundColor: salesGradient,
                 borderWidth: 3,
                 fill: true,
                 tension: 0.4,
                 pointBackgroundColor: '#fff',
-                pointBorderColor: '#3b5998',
-                pointRadius: 3
+                pointBorderColor: '#18181b',
+                pointBorderWidth: 2.5,
+                pointRadius: 4,
+                pointHoverRadius: 6,
+                pointHoverBackgroundColor: '#18181b',
+                pointHoverBorderColor: '#fff',
+                pointHoverBorderWidth: 2.5
               },
               {
                 label: 'Laba Bersih',
                 data: chartDataProfit,
-                borderColor: '#10b981', // emerald-500
+                borderColor: '#0ea5e9',
                 backgroundColor: profitGradient,
                 borderWidth: 3,
                 fill: true,
                 tension: 0.4,
                 pointBackgroundColor: '#fff',
-                pointBorderColor: '#10b981',
-                pointRadius: 3
+                pointBorderColor: '#0ea5e9',
+                pointBorderWidth: 2.5,
+                pointRadius: 4,
+                pointHoverRadius: 6,
+                pointHoverBackgroundColor: '#0ea5e9',
+                pointHoverBorderColor: '#fff',
+                pointHoverBorderWidth: 2.5
               }
             ]
           },
+          plugins: [
+            {
+              id: 'customShadow',
+              beforeDatasetsDraw(chart, args, options) {
+                const { ctx } = chart;
+                ctx.save();
+                ctx.shadowColor = 'rgba(15, 23, 42, 0.15)';
+                ctx.shadowBlur = 8;
+                ctx.shadowOffsetY = 4;
+              },
+              afterDatasetsDraw(chart, args, options) {
+                const { ctx } = chart;
+                ctx.restore();
+              }
+            }
+          ],
           options: {
             responsive: true,
             maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
+            animations: {
+              y: {
+                type: 'number',
+                easing: 'easeOutElastic',
+                duration: 2000,
+                from: (ctx) => {
+                  if (ctx.type === 'data') {
+                    return ctx.chart.scales.y.getPixelForValue(0);
+                  }
+                },
+                delay: (ctx) => {
+                  if (ctx.type === 'data') {
+                    return ctx.index * 80;
+                  }
+                }
+              },
+              opacity: {
+                easing: 'easeInOutQuad',
+                duration: 1000,
+                from: 0,
+                to: 1,
+                delay: (ctx) => {
+                  if (ctx.type === 'data') {
+                    return ctx.index * 40;
+                  }
+                }
+              }
+            },
             plugins: {
               legend: { position: 'top', labels: { font: { family: 'Inter', size: 10, weight: 'bold' } } },
               tooltip: {
@@ -2159,44 +2411,44 @@
           {/* Cards metrics */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 animate-[fadeIn_0.2s]">
             <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-sky-50 text-sky-650 flex items-center justify-center flex-shrink-0">
+              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
                 <Icon name="wallet" size={24} />
               </div>
               <div>
-                <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Pendapatan</p>
-                <h4 className="text-xl font-extrabold text-zinc-855">Rp {metrics.revenue.toLocaleString('id-ID')}</h4>
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Pendapatan</p>
+                <h4 className="text-xl font-bold text-zinc-800">Rp {metrics.revenue.toLocaleString('id-ID')}</h4>
               </div>
             </div>
 
             <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
                 <Icon name="receipt" size={24} />
               </div>
               <div>
-                <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Total Modal (HPP)</p>
-                <h4 className="text-xl font-extrabold text-zinc-855">Rp {metrics.cost.toLocaleString('id-ID')}</h4>
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Total Modal (HPP)</p>
+                <h4 className="text-xl font-bold text-zinc-800">Rp {metrics.cost.toLocaleString('id-ID')}</h4>
               </div>
             </div>
 
             <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
                 <Icon name="trending-up" size={24} />
               </div>
               <div>
-                <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Bersih</p>
-                <h4 className={`text-xl font-extrabold ${metrics.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Bersih</p>
+                <h4 className={`text-xl font-bold ${metrics.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   Rp {metrics.profit.toLocaleString('id-ID')}
                 </h4>
               </div>
             </div>
 
             <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
                 <Icon name="shopping-bag" size={24} />
               </div>
               <div>
-                <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Transaksi</p>
-                <h4 className="text-xl font-extrabold text-zinc-855">{metrics.count} Nota</h4>
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Transaksi</p>
+                <h4 className="text-xl font-bold text-zinc-800">{metrics.count} Nota</h4>
               </div>
             </div>
           </div>
@@ -2213,7 +2465,7 @@
             {/* Best Sellers */}
             <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex flex-col h-80">
               <h4 className="font-bold text-sm text-zinc-800 mb-4">Produk Terlaris</h4>
-              <div className="flex-1 overflow-y-auto custom-scroll space-y-3">
+              <div className="flex-1 overflow-y-auto custom-scroll space-y-3 pr-4">
                 {bestSellers.length === 0 ? (
                   <p className="text-xs text-zinc-400 text-center py-16">Belum ada transaksi</p>
                 ) : (
@@ -2402,35 +2654,35 @@
         return (
           <div className="space-y-6 animate-[fadeIn_0.2s] text-left">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-sky-50 text-sky-650 flex items-center justify-center flex-shrink-0">
+              <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-white border border-zinc-200/60 text-zinc-500 flex items-center justify-center flex-shrink-0">
                   <Icon name="landmark" size={24} />
                 </div>
                 <div>
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Kotor Penjualan</p>
-                  <h4 className="text-lg font-extrabold text-zinc-855">Rp {grossProfit.toLocaleString('id-ID')}</h4>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Kotor Penjualan</p>
+                  <h4 className="text-xl font-bold text-zinc-800">Rp {grossProfit.toLocaleString('id-ID')}</h4>
                   <p className="text-[10px] text-zinc-400 mt-1">Margin: {marginPct.toFixed(1)}%</p>
                 </div>
               </div>
 
-              <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center flex-shrink-0">
+              <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-white border border-zinc-200/60 text-zinc-500 flex items-center justify-center flex-shrink-0">
                   <Icon name="shopping-bag" size={24} />
                 </div>
                 <div>
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Biaya Belanja & Operasional</p>
-                  <h4 className="text-lg font-extrabold text-rose-650">Rp {(buyTotal + takeTotal + voidTotal).toLocaleString('id-ID')}</h4>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Biaya Belanja & Operasional</p>
+                  <h4 className="text-xl font-bold text-zinc-800">Rp {(buyTotal + takeTotal + voidTotal).toLocaleString('id-ID')}</h4>
                   <p className="text-[10px] text-zinc-450 mt-1">Beli: Rp {buyTotal.toLocaleString('id-ID')} | Ambil: Rp {takeTotal.toLocaleString('id-ID')}</p>
                 </div>
               </div>
 
-              <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0">
+              <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-white border border-zinc-200/60 text-zinc-500 flex items-center justify-center flex-shrink-0">
                   <Icon name="trending-up" size={24} />
                 </div>
                 <div>
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Bersih Akhir</p>
-                  <h4 className={`text-lg font-extrabold ${netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Bersih Akhir</p>
+                  <h4 className={`text-xl font-bold ${netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                     Rp {netProfit.toLocaleString('id-ID')}
                   </h4>
                   <p className="text-[10px] text-zinc-400 mt-1">Sesudah pengadaan & retur</p>
@@ -2566,33 +2818,47 @@
               <p className="text-sm text-zinc-500">Analisis bisnis, inventaris, dan kinerja karyawan berjalan</p>
             </div>
             {dashboardTab === 'overview' && (
-              <div className="flex gap-2 w-full sm:w-auto">
+              <div className="flex gap-2 w-full sm:w-auto no-print">
                 <select value={filter} onChange={e => setFilter(e.target.value)} className="px-4 py-2.5 bg-white border border-zinc-200 rounded-xl font-semibold outline-none text-zinc-700 shadow-sm flex-1 sm:flex-none">
                   <option value="today">Hari Ini</option>
                   <option value="7days">7 Hari Terakhir</option>
                   <option value="month">Bulan Ini</option>
                 </select>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-4 py-2.5 bg-zinc-950 text-white rounded-xl font-semibold hover:bg-zinc-800 transition flex items-center gap-1.5 shadow-sm text-xs"
+                >
+                  <Icon name="printer" size={14} />
+                  <span>Cetak Laporan</span>
+                </button>
               </div>
             )}
           </div>
 
           {/* Tab selector */}
-          <div className="flex border-b border-zinc-200 mb-6 gap-6 text-sm font-semibold overflow-x-auto custom-scroll whitespace-nowrap">
-            <button onClick={() => setDashboardTab('overview')} className={`pb-3 transition ${dashboardTab === 'overview' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
-              Ringkasan & Analitik
-            </button>
-            <button onClick={() => setDashboardTab('staff')} className={`pb-3 transition ${dashboardTab === 'staff' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
-              Pelacakan Karyawan (Real-time)
-            </button>
-            <button onClick={() => setDashboardTab('finance')} className={`pb-3 transition ${dashboardTab === 'finance' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
-              Manajemen Keuangan & HPP
-            </button>
-            <button onClick={() => setDashboardTab('audit')} className={`pb-3 transition ${dashboardTab === 'audit' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
-              Log Audit Lengkap
-            </button>
-            <button onClick={() => setDashboardTab('approvals')} className={`pb-3 transition ${dashboardTab === 'approvals' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400 hover:text-zinc-700'}`}>
-              Persetujuan Admin
-            </button>
+          <div className="flex bg-zinc-100/80 p-1 rounded-2xl mb-6 gap-1 text-xs font-bold overflow-x-auto custom-scroll whitespace-nowrap max-w-fit border border-zinc-200/50 text-left">
+            {[
+              { id: 'overview', label: 'Ringkasan & Analitik', icon: 'bar-chart-2' },
+              { id: 'staff', label: 'Pelacakan Karyawan', icon: 'users' },
+              { id: 'finance', label: 'Keuangan & HPP', icon: 'dollar-sign' },
+              { id: 'audit', label: 'Log Audit Lengkap', icon: 'database' },
+              { id: 'approvals', label: 'Persetujuan Admin', icon: 'check-square' },
+              { id: 'activity', label: 'Pantau Aktivitas', icon: 'eye' }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setDashboardTab(tab.id)}
+                className={`px-4 py-2.5 rounded-xl transition-all duration-200 flex items-center gap-2 ${
+                  dashboardTab === tab.id
+                    ? 'bg-white text-zinc-900 shadow-sm border border-zinc-200/50'
+                    : 'text-zinc-500 hover:text-zinc-800 hover:bg-white/50'
+                }`}
+              >
+                <Icon name={tab.icon} size={14} className={dashboardTab === tab.id ? 'text-zinc-800' : 'text-zinc-400'} />
+                <span>{tab.label}</span>
+              </button>
+            ))}
           </div>
 
           {dashboardTab === 'overview' && renderOverview()}
@@ -2600,6 +2866,7 @@
           {dashboardTab === 'finance' && renderFinance()}
           {dashboardTab === 'audit' && renderFullAuditLogs()}
           {dashboardTab === 'approvals' && renderApprovals()}
+          {dashboardTab === 'activity' && <ActivityMonitor db={db} app={app} />}
 
           {selectedStaffDetail && (
             <StaffActivityModal
@@ -2609,6 +2876,310 @@
               db={db}
             />
           )}
+        </div>
+      );
+    }
+
+    function ActivityMonitor({ db, app }) {
+      const [activeUserFilter, setActiveUserFilter] = useState('all');
+      const [activeTypeFilter, setActiveTypeFilter] = useState('all');
+      const [searchQuery, setSearchQuery] = useState('');
+
+      const logs = db.activityLogs || [];
+      const registeredUsers = (db.users || []).filter(u => u.role !== 'owner');
+
+      const checkUserOnline = (u) => {
+        if (!u.lastActive || u.entryStatus !== 'entered') return false;
+        const now = new Date();
+        const diffMs = now - new Date(u.lastActive);
+        return diffMs < 15 * 60 * 1000; // 15 menit
+      };
+
+      const filteredLogs = logs.filter(l => {
+        const matchUser = activeUserFilter === 'all' || 
+          (l.user && l.user.toLowerCase() === activeUserFilter.toLowerCase()) ||
+          (l.email && l.email.toLowerCase() === activeUserFilter.toLowerCase());
+        const matchType = activeTypeFilter === 'all' || l.type === activeTypeFilter;
+        const matchSearch = !searchQuery.trim() || 
+          l.details.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          l.user.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          (l.email && l.email.toLowerCase().includes(searchQuery.toLowerCase()));
+        return matchUser && matchType && matchSearch;
+      });
+
+      // Hitung log per user
+      const getUserLogCount = (username) => {
+        if (!username) return 0;
+        return logs.filter(l => 
+          (l.user && l.user.toLowerCase() === username.toLowerCase()) ||
+          (l.email && l.email.toLowerCase() === username.toLowerCase())
+        ).length;
+      };
+
+      // Statistik
+      const onlineCount = registeredUsers.filter(u => checkUserOnline(u)).length;
+      const offlineCount = registeredUsers.length - onlineCount;
+      const logsToday = logs.filter(l => {
+        const d = new Date(l.timestamp);
+        const today = new Date();
+        return d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+      }).length;
+
+      // Cari user teraktif
+      let mostActiveUser = 'Tidak ada';
+      let maxLogs = 0;
+      registeredUsers.forEach(u => {
+        const c = getUserLogCount(u.name || u.email);
+        if (c > maxLogs) {
+          maxLogs = c;
+          mostActiveUser = u.name;
+        }
+      });
+
+      const handleClearLogs = () => {
+        if (confirm('Apakah Anda yakin ingin menghapus seluruh log aktivitas karyawan? Tindakan ini tidak dapat dibatalkan.')) {
+          const currentDb = getDB();
+          currentDb.activityLogs = [];
+          saveDB(currentDb);
+          app.refreshDB();
+          app.addToast('Log aktivitas berhasil dibersihkan', 'success');
+        }
+      };
+
+      const getTypeBadge = (type) => {
+        switch (type) {
+          case 'page_view':
+            return { bg: 'bg-blue-50 border-blue-200 text-blue-600', icon: 'eye', label: 'Buka Halaman' };
+          case 'click':
+            return { bg: 'bg-indigo-50 border-indigo-200 text-indigo-650', icon: 'mouse-pointer', label: 'Klik Menu' };
+          case 'key_input':
+            return { bg: 'bg-amber-50 border-amber-200 text-amber-600', icon: 'keyboard', label: 'Ketik Input' };
+          case 'data_mutasi':
+            return { bg: 'bg-emerald-50 border-emerald-250 text-emerald-600', icon: 'database', label: 'Mutasi Data' };
+          default:
+            return { bg: 'bg-zinc-50 border-zinc-200 text-zinc-650', icon: 'activity', label: 'Aktivitas' };
+        }
+      };
+
+      const getRoleColor = (role) => {
+        const r = role ? role.toLowerCase() : '';
+        if (r.includes('admin')) return 'bg-sky-100 text-sky-700 border-sky-200';
+        if (r.includes('kasir') || r.includes('cashier')) return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+        if (r.includes('keuangan')) return 'bg-indigo-100 text-indigo-700 border-indigo-200';
+        if (r.includes('manager')) return 'bg-purple-100 text-purple-700 border-purple-200';
+        if (r.includes('supervisor')) return 'bg-pink-100 text-pink-700 border-pink-200';
+        return 'bg-zinc-100 text-zinc-700 border-zinc-200';
+      };
+
+      return (
+        <div className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm animate-[fadeIn_0.2s_ease-out] text-left">
+          
+          {/* Header Title */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-6 border-b border-zinc-100">
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-lg font-bold text-zinc-800">Pemantauan Aktivitas Anggota</h4>
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-600">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                  LIVE MONITORING
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500 mt-1">Pantau status online dan seluruh interaksi staf non-owner secara real-time</p>
+            </div>
+            <div className="flex gap-2 w-full sm:w-auto">
+              <button 
+                onClick={handleClearLogs}
+                className="px-4 py-2 bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+              >
+                <Icon name="trash-2" size={13} /> Bersihkan Log
+              </button>
+              <button 
+                onClick={() => app.refreshDB()}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-850 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition shadow-sm"
+              >
+                <Icon name="refresh-cw" size={13} /> Segarkan Log
+              </button>
+            </div>
+          </div>
+
+          {/* Panel Statistik Ringkas */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+              <div className="flex justify-between items-start">
+                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Karyawan Online</span>
+                <span className="p-1 bg-emerald-50 text-emerald-600 rounded-lg"><Icon name="users" size={14} /></span>
+              </div>
+              <p className="text-2xl font-bold text-zinc-800 mt-1.5">{onlineCount}</p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">Dari total {registeredUsers.length} anggota</p>
+            </div>
+            
+            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+              <div className="flex justify-between items-start">
+                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Karyawan Offline</span>
+                <span className="p-1 bg-zinc-150 text-zinc-500 rounded-lg"><Icon name="users" size={14} /></span>
+              </div>
+              <p className="text-2xl font-bold text-zinc-800 mt-1.5">{offlineCount}</p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">Sedang tidak aktif</p>
+            </div>
+
+            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+              <div className="flex justify-between items-start">
+                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Aktivitas Hari Ini</span>
+                <span className="p-1 bg-sky-50 text-sky-600 rounded-lg"><Icon name="activity" size={14} /></span>
+              </div>
+              <p className="text-2xl font-bold text-zinc-800 mt-1.5">{logsToday}</p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">Entri log terekam</p>
+            </div>
+
+            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+              <div className="flex justify-between items-start">
+                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Teraktif Hari Ini</span>
+                <span className="p-1 bg-amber-50 text-amber-600 rounded-lg"><Icon name="award" size={14} /></span>
+              </div>
+              <p className="text-base font-bold text-zinc-800 mt-2.5 truncate" title={mostActiveUser}>{mostActiveUser}</p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">{maxLogs} total interaksi</p>
+            </div>
+          </div>
+
+          {/* Grid Status Karyawan Terdaftar (Fitur Baru) */}
+          <div className="mb-6">
+            <h5 className="text-xs font-bold text-zinc-700 mb-3 flex items-center gap-1.5">
+              <Icon name="monitor" size={14} className="text-zinc-500" />
+              <span>Status Kehadiran & Aktivitas Seluruh Anggota</span>
+            </h5>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {registeredUsers.map(u => {
+                const online = checkUserOnline(u);
+                const count = getUserLogCount(u.name || u.email);
+                return (
+                  <div 
+                    key={u.id}
+                    onClick={() => setActiveUserFilter(u.name || u.email)}
+                    className={`p-3.5 border rounded-2xl transition cursor-pointer flex items-center justify-between gap-3 ${
+                      activeUserFilter === (u.name || u.email)
+                        ? 'bg-sky-50/50 border-sky-350 shadow-sm ring-1 ring-sky-300'
+                        : 'bg-zinc-50/30 border-zinc-200 hover:bg-zinc-50/80 hover:border-zinc-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="relative flex-shrink-0">
+                        <div className="w-10 h-10 rounded-full bg-zinc-100 border border-zinc-200 text-zinc-700 flex items-center justify-center font-bold text-xs">
+                          {u.name?.substring(0, 2).toUpperCase()}
+                        </div>
+                        <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${
+                          online ? 'bg-emerald-500 animate-[pulse_1.5s_infinite]' : 'bg-zinc-300'
+                        }`} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-zinc-800 truncate">{u.name}</p>
+                        <p className="text-[9px] text-zinc-450 mt-0.5 truncate">{u.email}</p>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-extrabold uppercase border ${getRoleColor(u.role)}`}>
+                            {u.role}
+                          </span>
+                          <span className="text-[9px] text-zinc-400 font-medium font-mono">
+                            {count} Log
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-[8px] font-bold text-zinc-400 uppercase">Aktif Terakhir</p>
+                      <p className="text-[10px] font-semibold text-zinc-600 mt-0.5">
+                        {u.lastActive ? formatTimeAgo(u.lastActive) : 'Belum pernah'}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Filter Area */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6 bg-zinc-50/40 p-4 border border-zinc-200 rounded-2xl">
+            <div>
+              <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Pilih Anggota</label>
+              <select
+                value={activeUserFilter}
+                onChange={e => setActiveUserFilter(e.target.value)}
+                className="w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-xs outline-none focus:border-zinc-450 font-semibold text-zinc-700"
+              >
+                <option value="all">Semua Anggota ({registeredUsers.length})</option>
+                {registeredUsers.map(u => {
+                  const online = checkUserOnline(u);
+                  return (
+                    <option key={u.id} value={u.name || u.email}>
+                      {u.name} ({online ? 'Online' : 'Offline'})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Jenis Aktivitas</label>
+              <select
+                value={activeTypeFilter}
+                onChange={e => setActiveTypeFilter(e.target.value)}
+                className="w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-xs outline-none focus:border-zinc-450 font-semibold text-zinc-700"
+              >
+                <option value="all">Semua Jenis</option>
+                <option value="page_view">👀 Buka Halaman (Page View)</option>
+                <option value="click">🖱️ Klik Menu & Tombol</option>
+                <option value="key_input">⌨️ Ketik Input (Keylogger)</option>
+                <option value="data_mutasi">🗄️ Mutasi Data (Tambah/Edit/Hapus)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Cari Isi Aktivitas</label>
+              <div className="relative">
+                <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="Ketik kata kunci..."
+                  className="w-full pl-9 pr-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-xs outline-none focus:border-zinc-450 font-medium"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* List Activity Logs */}
+          <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scroll">
+            {filteredLogs.map((log) => {
+              const info = getTypeBadge(log.type);
+              return (
+                <div key={log.id} className="group relative flex items-start gap-4 p-4 bg-zinc-50/40 border border-zinc-150 rounded-2xl hover:bg-zinc-50 hover:border-zinc-250 transition-all duration-150 animate-[fadeIn_0.15s_ease-out]">
+                  <div className={`w-10 h-10 rounded-xl border flex items-center justify-center flex-shrink-0 ${info.bg} shadow-sm group-hover:scale-105 transition-transform`}>
+                    <Icon name={info.icon} size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-1.5 mb-1">
+                      <div className="flex items-center flex-wrap gap-2">
+                        <span className="font-bold text-zinc-800 text-xs truncate max-w-[150px]">{log.user}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-zinc-100 border border-zinc-200 text-[9px] font-bold text-zinc-500 uppercase tracking-wider">{log.role}</span>
+                        <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${info.bg}`}>{info.label}</span>
+                      </div>
+                      <span className="text-[10px] font-medium text-zinc-400 flex items-center gap-1">
+                        <Icon name="clock" size={10} />
+                        {new Date(log.timestamp).toLocaleString('id-ID')}
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-700 leading-relaxed break-words font-medium pr-4">
+                      {log.details}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+            {filteredLogs.length === 0 && (
+              <div className="py-16 text-center text-zinc-400 border border-dashed border-zinc-200 rounded-3xl">
+                <Icon name="activity" size={40} className="mx-auto mb-3 text-zinc-300" />
+                <p className="font-bold text-sm">Tidak ada log aktivitas ditemukan</p>
+                <p className="text-xs mt-1 text-zinc-400/80">Log perekaman akan muncul di sini ketika staf non-owner melakukan aktivitas</p>
+              </div>
+            )}
+          </div>
         </div>
       );
     }
@@ -2770,6 +3341,7 @@
       const [isSplitPayment, setIsSplitPayment] = useState(false);
       const [splitCashAmount, setSplitCashAmount] = useState('');
       const [splitQrisAmount, setSplitQrisAmount] = useState('');
+      const [orderNotes, setOrderNotes] = useState('');
       const [qrisMode, setQrisMode] = useState('shop'); // 'shop', 'dynamic', 'saved'
       const [selectedSavedScanId, setSelectedSavedScanId] = useState('');
 
@@ -2799,13 +3371,20 @@
             e.preventDefault();
             const searchInput = document.querySelector('input[placeholder*="Cari menu"]');
             if (searchInput) searchInput.focus();
-          } else if (e.key === 'F8') {
+          } else if (e.key === 'F4') {
+            e.preventDefault();
+            setShowDiscountModal(true);
+          } else if (e.key === 'F7') {
             e.preventDefault();
             if (app.cart.length > 0) {
               setShowPaymentModal(true);
             } else {
               app.addToast('Keranjang belanja kosong', 'info');
             }
+          } else if (e.key === 'F9') {
+            e.preventDefault();
+            const memberInput = document.querySelector('input[placeholder*="Cari pelanggan"]');
+            if (memberInput) memberInput.focus();
           }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -3097,6 +3676,7 @@
             payment: amtPaid,
             change: cashChange,
             splitDetails: splitDetails,
+            notes: orderNotes,
             memberId: selectedMember ? selectedMember.id : null,
             memberName: selectedMember ? selectedMember.name : null,
             kitchenStatus: app.cart.some(item => ['Makanan', 'Minuman'].includes(item.category)) ? 'cooking' : 'none',
@@ -3157,8 +3737,10 @@
 
           // Catat audit log untuk transaksi dan manual discount di client
           logAuditAction('Penjualan', `Melakukan transaksi penjualan dengan ID ${tx.id} senilai Rp ${tx.total.toLocaleString('id-ID')}`, app.user);
+          logUserActivity('data_mutasi', `Melakukan checkout transaksi ${tx.id} senilai Rp ${tx.total.toLocaleString('id-ID')}`);
           if (tx.discount > 0) {
             logAuditAction('Diskon Manual', `Memberikan diskon senilai Rp ${tx.discount.toLocaleString('id-ID')} pada transaksi ${tx.id}`, app.user);
+            logUserActivity('data_mutasi', `Memberikan diskon manual Rp ${tx.discount.toLocaleString('id-ID')} pada transaksi ${tx.id}`);
           }
 
           app.setLastTransaction(tx);
@@ -3167,6 +3749,7 @@
           app.refreshDB();
           app.clearCart();
           setDiscount(0);
+          setOrderNotes('');
           setSelectedMember(null);
           setIsSplitPayment(false);
           setSplitCashAmount('');
@@ -3311,6 +3894,26 @@
                 ))}
               </div>
             </div>
+
+            {/* Keyboard Shortcuts Legend */}
+            <div className="hidden lg:flex items-center justify-between gap-2 mt-4 px-5 py-3.5 bg-zinc-50 border border-zinc-200 rounded-2xl text-[10px] text-zinc-500 font-bold shadow-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F2</span>
+                <span className="font-semibold">Cari Menu</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F4</span>
+                <span className="font-semibold">Diskon</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F7</span>
+                <span className="font-semibold">Bayar</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F9</span>
+                <span className="font-semibold">Pilih Pelanggan</span>
+              </div>
+            </div>
           </div>
 
           {/* Floating Cart Button (Mobile Only) */}
@@ -3333,7 +3936,7 @@
           )}
 
           {/* BAGIAN KANAN: KERANJANG */}
-          <div className={`w-full md:w-80 lg:w-96 flex flex-col bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden ${mobileView === 'products' ? 'hidden md:flex' : 'flex'}`}>
+          <div className={`w-full md:w-80 lg:w-96 flex flex-col bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden h-[calc(100vh-170px)] md:h-[calc(100vh-170px)] min-h-[520px] ${mobileView === 'products' ? 'hidden md:flex' : 'flex'}`}>
             <div className="p-5 border-b border-zinc-100 flex justify-between items-center bg-zinc-50/50">
               <div className="flex items-center gap-3">
                 {mobileView === 'cart' && (
@@ -3411,33 +4014,57 @@
                     />
                   </div>
 
-                  <div className="max-h-32 overflow-y-auto custom-scroll space-y-1">
-                    {filteredMembers.length > 0 ? filteredMembers.map(m => (
-                      <div key={m.id} className="flex items-center justify-between gap-2 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-left">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedMember(m)}
-                          className="min-w-0 flex-1 text-left"
-                          title="Pilih pelanggan"
-                        >
-                          <p className="text-xs font-bold text-zinc-800 truncate">{m.name}</p>
-                          <p className="text-[10px] text-zinc-500 truncate">{m.phone || 'Tanpa telp'} | {m.points || 0} Poin</p>
-                        </button>
-                        <button onClick={() => setShowMemberModal({ mode: 'edit', member: m })} className="p-1.5 text-zinc-500 hover:bg-zinc-100 rounded-lg transition" title="Edit Pelanggan">
-                          <Icon name="pencil" size={13} />
-                        </button>
-                        <button onClick={() => handleDeleteMember(m.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition" title="Hapus Pelanggan">
-                          <Icon name="trash-2" size={13} />
-                        </button>
-                      </div>
-                    )) : (
-                      <div className="bg-white border border-dashed border-zinc-200 rounded-xl px-3 py-3 text-center text-[11px] text-zinc-400">
-                        Pelanggan tidak ditemukan
-                      </div>
-                    )}
-                  </div>
+                  {memberSearchQuery.trim() !== '' && (
+                    <div className="max-h-32 overflow-y-auto custom-scroll space-y-1 animate-[fadeIn_0.15s_ease-out]">
+                      {filteredMembers.length > 0 ? filteredMembers.map(m => (
+                        <div key={m.id} className="flex items-center justify-between gap-2 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-left">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedMember(m);
+                              setMemberSearchQuery('');
+                            }}
+                            className="min-w-0 flex-1 text-left"
+                            title="Pilih pelanggan"
+                          >
+                            <p className="text-xs font-bold text-zinc-800 truncate">{m.name}</p>
+                            <p className="text-[10px] text-zinc-500 truncate">{m.phone || 'Tanpa telp'} | {m.points || 0} Poin</p>
+                          </button>
+                          <button onClick={() => setShowMemberModal({ mode: 'edit', member: m })} className="p-1.5 text-zinc-500 hover:bg-zinc-100 rounded-lg transition" title="Edit Pelanggan">
+                            <Icon name="pencil" size={13} />
+                          </button>
+                          <button onClick={() => handleDeleteMember(m.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition" title="Hapus Pelanggan">
+                            <Icon name="trash-2" size={13} />
+                          </button>
+                        </div>
+                      )) : (
+                        <div className="bg-white border border-dashed border-zinc-200 rounded-xl px-3 py-3 text-center text-[11px] text-zinc-400">
+                          Pelanggan tidak ditemukan
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
+
+            {/* Order Notes Input */}
+            <div className="px-5 py-2.5 bg-zinc-50 border-b border-zinc-150 animate-[fadeIn_0.2s_ease-out]">
+              <div className="relative">
+                <input
+                  type="text"
+                  value={orderNotes}
+                  onChange={e => setOrderNotes(e.target.value)}
+                  placeholder="Tambah catatan pesanan (cth: tanpa sendok)..."
+                  className="w-full pl-8 pr-8 py-2 bg-white border border-zinc-200 rounded-xl text-[11px] font-medium outline-none text-zinc-700 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-200/50 transition-all shadow-xs"
+                />
+                <Icon name="file-text" size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                {orderNotes && (
+                  <button onClick={() => setOrderNotes('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-zinc-400 hover:text-zinc-600 transition-colors">
+                    <Icon name="x" size={11} />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scroll">
@@ -4090,6 +4717,7 @@
       const [showForm, setShowForm] = useState(false);
       const [showCategoryModal, setShowCategoryModal] = useState(false);
       const [editProduct, setEditProduct] = useState(null);
+      const [approvalPrompt, setApprovalPrompt] = useState(null);
       
       // Pagination
       const [currentPage, setCurrentPage] = useState(1);
@@ -4260,6 +4888,21 @@
           return;
         }
 
+        if (app.user?.role !== 'owner') {
+          if (!app.user?.role?.includes('admin')) {
+            app.addToast('Aksi ditolak. Role Anda tidak memiliki izin untuk memodifikasi produk.', 'error');
+            return;
+          }
+          // Jika admin, alihkan ke pengajuan persetujuan
+          setApprovalPrompt({
+            type: editProduct ? 'product_edit' : 'product_add',
+            targetId: editProduct ? editProduct.id : null,
+            title: editProduct ? 'Pengajuan Edit Produk' : 'Pengajuan Tambah Produk',
+            data: data
+          });
+          return;
+        }
+
         const db = getDB();
         const nowStr = new Date().toISOString();
         if (editProduct) {
@@ -4293,6 +4936,23 @@
       };
 
       const handleDelete = (id) => {
+        if (app.user?.role !== 'owner') {
+          if (!app.user?.role?.includes('admin')) {
+            app.addToast('Aksi ditolak. Role Anda tidak memiliki izin untuk memodifikasi produk.', 'error');
+            return;
+          }
+          const db = getDB();
+          const prod = db.products.find(p => p.id === id);
+          if (!prod) return;
+          setApprovalPrompt({
+            type: 'product_delete',
+            targetId: id,
+            title: 'Pengajuan Hapus Produk',
+            data: { name: prod.name, sku: prod.sku }
+          });
+          return;
+        }
+
         if(confirm('Hapus produk ini?')) {
           const db = getDB();
           const idx = db.products.findIndex(p => p.id === id);
@@ -4310,18 +4970,34 @@
 
       return (
         <div className="pb-16 md:pb-0">
+          {app.user?.role !== 'owner' && (
+            <div className="mb-5 p-4 bg-amber-50/50 border border-amber-200 rounded-2xl flex items-start gap-3 text-xs text-amber-850 font-medium leading-normal animate-[fadeIn_0.2s_ease-out]">
+              <Icon name="info" size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-900">Perhatian: Hak Akses Produk Terbatas</p>
+                <p className="text-amber-700/90 mt-0.5">
+                  {app.user?.role?.includes('admin') 
+                    ? "Sebagai Admin, Anda dapat mengajukan penambahan, pengubahan, atau penghapusan produk. Namun, aksi tersebut memerlukan persetujuan Owner sebelum diterapkan."
+                    : "Akun Anda hanya memiliki hak akses untuk melihat daftar katalog dan stok produk. Modifikasi data produk tidak diizinkan."}
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
             <div>
               <h3 className="text-xl font-bold text-zinc-800">Manajemen Produk</h3>
               <p className="text-sm text-zinc-500">Kelola katalog dan stok barang</p>
             </div>
             <div className="flex flex-wrap gap-2 w-full sm:w-auto mt-2 sm:mt-0">
-              <button 
-                onClick={() => setShowCategoryModal(true)} 
-                className="px-4 py-2.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm"
-              >
-                <Icon name="tags" size={16} /> Kategori
-              </button>
+              {['owner', 'admin'].includes(app.user?.role) && (
+                <button 
+                  onClick={() => setShowCategoryModal(true)} 
+                  className="px-4 py-2.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm"
+                >
+                  <Icon name="tags" size={16} /> Kategori
+                </button>
+              )}
               
               {/* Import/Export CSV */}
               <button 
@@ -4332,17 +5008,21 @@
                 <Icon name="download" size={16} /> Ekspor
               </button>
               
-              <label className="px-4 py-2.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer">
-                <Icon name="upload" size={16} /> Impor
-                <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
-              </label>
+              {['owner', 'admin'].includes(app.user?.role) && (
+                <label className="px-4 py-2.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer">
+                  <Icon name="upload" size={16} /> Impor
+                  <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
+                </label>
+              )}
 
-              <button 
-                onClick={() => { setEditProduct(null); setShowForm(true); }} 
-                className="px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition bg-zinc-900 hover:bg-zinc-800 text-white shadow-md"
-              >
-                <Icon name="plus" size={16} /> Tambah Produk
-              </button>
+              {['owner', 'admin'].includes(app.user?.role) && (
+                <button 
+                  onClick={() => { setEditProduct(null); setShowForm(true); }} 
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition bg-zinc-900 hover:bg-zinc-800 text-white shadow-md"
+                >
+                  <Icon name="plus" size={16} /> Tambah Produk
+                </button>
+              )}
             </div>
           </div>
 
@@ -4413,7 +5093,9 @@
                   <th className="text-left px-6 py-4 text-xs font-bold text-zinc-500 uppercase tracking-wider">Kategori</th>
                   <th className="text-right px-6 py-4 text-xs font-bold text-zinc-500 uppercase tracking-wider">Harga</th>
                   <th className="text-center px-6 py-4 text-xs font-bold text-zinc-500 uppercase tracking-wider">Stok</th>
-                  <th className="text-center px-6 py-4 text-xs font-bold text-zinc-500 uppercase tracking-wider">Aksi</th>
+                  {['owner', 'admin'].includes(app.user?.role) && (
+                    <th className="text-center px-6 py-4 text-xs font-bold text-zinc-500 uppercase tracking-wider">Aksi</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
@@ -4445,12 +5127,14 @@
                         {p.stock}
                       </span>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="flex justify-center gap-2">
-                        <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Edit"><Icon name="edit" size={14} /></button>
-                        <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition" title="Hapus"><Icon name="trash-2" size={14} /></button>
-                      </div>
-                    </td>
+                    {['owner', 'admin'].includes(app.user?.role) && (
+                      <td className="px-6 py-4">
+                        <div className="flex justify-center gap-2">
+                          <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Edit"><Icon name="edit" size={14} /></button>
+                          <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition" title="Hapus"><Icon name="trash-2" size={14} /></button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -4488,10 +5172,12 @@
                        <span className={`text-xs font-bold ${p.stock <= 5 ? 'text-rose-500' : 'text-emerald-600'}`}>{p.stock} item</span>
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition"><Icon name="edit" size={14} /></button>
-                    <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition"><Icon name="trash-2" size={14} /></button>
-                  </div>
+                  {['owner', 'admin'].includes(app.user?.role) && (
+                    <div className="flex gap-2">
+                      <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition"><Icon name="edit" size={14} /></button>
+                      <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition"><Icon name="trash-2" size={14} /></button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -4531,9 +5217,39 @@
             </div>
           )}
 
-          {/* Category Management Modal */}
           {showCategoryModal && (
             <CategoryModal onClose={() => setShowCategoryModal(false)} app={app} />
+          )}
+
+          {approvalPrompt && (
+            <ReasonModal
+              isOpen={!!approvalPrompt}
+              onClose={() => setApprovalPrompt(null)}
+              title={approvalPrompt.title}
+              onSubmit={(reason) => {
+                const currentDb = getDB();
+                const newApproval = {
+                  id: 'AP' + Date.now(),
+                  requesterId: app.user.id,
+                  requesterName: app.user.name,
+                  requesterRole: app.user.role,
+                  type: approvalPrompt.type,
+                  targetId: approvalPrompt.targetId,
+                  reason: reason.trim(),
+                  data: approvalPrompt.data || null,
+                  status: 'pending',
+                  createdAt: new Date().toISOString()
+                };
+                currentDb.adminApprovals = currentDb.adminApprovals || [];
+                currentDb.adminApprovals.push(newApproval);
+                saveDB(currentDb);
+                app.refreshDB();
+                app.addToast('Pengajuan perubahan produk dikirim ke Owner', 'success');
+                setApprovalPrompt(null);
+                setShowForm(false);
+                setEditProduct(null);
+              }}
+            />
           )}
         </div>
       );
@@ -4619,9 +5335,30 @@
               <input type="number" value={form.price} onChange={e => setForm({...form, price: parseInt(e.target.value) || 0})} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-semibold text-zinc-800 focus:bg-white focus:border-zinc-500" required disabled={form.openPrice} placeholder={form.openPrice ? "Diisi saat transaksi" : "0"} />
             </div>
             <div className="text-left">
-              <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Modal / Harga Beli</label>
+              <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Modal / Harga Beli (HPP)</label>
               <input type="number" value={form.cost} onChange={e => setForm({...form, cost: parseInt(e.target.value) || 0})} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-semibold text-zinc-800 focus:bg-white focus:border-zinc-500" required placeholder="Modal per barang" />
             </div>
+            
+            {/* Profit Margin Calculator & Warning */}
+            <div className="col-span-2 text-left bg-zinc-50/50 p-3.5 border border-zinc-200/60 rounded-xl flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block mb-0.5">Perkiraan Margin Laba Kotor</span>
+                {form.price > 0 ? (
+                  <span className={`text-xs font-bold ${((form.price - (form.cost || 0)) / form.price * 100) < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                    {((form.price - (form.cost || 0)) / form.price * 100).toFixed(1)}% {((form.price - (form.cost || 0)) / form.price * 100) < 0 ? '⚠️ (Jual Rugi)' : '(Untung)'}
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-semibold text-zinc-400">Masukkan harga jual & modal untuk estimasi</span>
+                )}
+              </div>
+              {form.price > 0 && form.price < form.cost && (
+                <div className="flex items-center gap-1.5 text-rose-600 text-[10px] font-bold bg-rose-50 border border-rose-100 px-2.5 py-1.5 rounded-lg animate-pulse">
+                  <Icon name="alert-triangle" size={12} />
+                  <span>Jual Rugi! Harga jual di bawah modal</span>
+                </div>
+              )}
+            </div>
+
             <div className="text-left">
               <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Stok</label>
               <input type="number" value={form.stock} onChange={e => setForm({...form, stock: parseFloat(e.target.value) || 0})} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-medium text-zinc-800 focus:bg-white focus:border-zinc-500" required />
@@ -5215,22 +5952,23 @@
 
         if (chartType === 'line') {
           const gradient = ctx.createLinearGradient(0, 0, 0, 240);
-          gradient.addColorStop(0, 'rgba(79, 70, 229, 0.35)'); // sky-600 / Indigo-600 color
-          gradient.addColorStop(1, 'rgba(79, 70, 229, 0.0)');
+          gradient.addColorStop(0, 'rgba(99, 102, 241, 0.4)'); // Violet-indigo
+          gradient.addColorStop(0.5, 'rgba(168, 85, 247, 0.15)'); // Purple accent
+          gradient.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
           
           datasetConfig = {
             type: 'line',
             label: 'Pendapatan (Rp)',
             data: chartData,
-            borderColor: '#4f46e5', // sky-600 / Indigo-600
+            borderColor: '#6366f1', // Indigo-500
             backgroundColor: gradient,
-            borderWidth: 3,
+            borderWidth: 3.5,
             pointBackgroundColor: '#fff',
-            pointBorderColor: '#4f46e5',
+            pointBorderColor: '#6366f1',
             pointBorderWidth: 3,
             pointRadius: 4,
             pointHoverRadius: 7,
-            pointHoverBackgroundColor: '#4f46e5',
+            pointHoverBackgroundColor: '#6366f1',
             pointHoverBorderColor: '#fff',
             pointHoverBorderWidth: 3,
             fill: true,
@@ -5238,8 +5976,8 @@
           };
         } else {
           const gradient = ctx.createLinearGradient(0, 0, 0, 240);
-          gradient.addColorStop(0, 'rgba(79, 70, 229, 0.85)');
-          gradient.addColorStop(1, 'rgba(79, 70, 229, 0.2)');
+          gradient.addColorStop(0, '#6366f1'); // Indigo-500
+          gradient.addColorStop(1, '#a855f7'); // Purple-500
           
           datasetConfig = {
             type: 'bar',
@@ -5248,9 +5986,9 @@
             borderColor: 'transparent',
             backgroundColor: gradient,
             borderWidth: 0,
-            borderRadius: 8,
+            borderRadius: { topLeft: 10, topRight: 10, bottomLeft: 0, bottomRight: 0 },
             borderSkipped: false,
-            barPercentage: 0.55
+            barPercentage: 0.45
           };
         }
 
@@ -5259,6 +5997,22 @@
             labels: chartLabels,
             datasets: [datasetConfig]
           },
+          plugins: chartType === 'line' ? [
+            {
+              id: 'customShadow',
+              beforeDatasetsDraw(chart, args, options) {
+                const { ctx } = chart;
+                ctx.save();
+                ctx.shadowColor = 'rgba(99, 102, 241, 0.3)';
+                ctx.shadowBlur = 10;
+                ctx.shadowOffsetY = 6;
+              },
+              afterDatasetsDraw(chart, args, options) {
+                const { ctx } = chart;
+                ctx.restore();
+              }
+            }
+          ] : [],
           options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -5266,9 +6020,33 @@
               mode: 'index',
               intersect: false
             },
-            animation: {
-              duration: 1500,
-              easing: 'easeOutQuart'
+            animations: {
+              y: {
+                type: 'number',
+                easing: 'easeOutElastic',
+                duration: 2000,
+                from: (ctx) => {
+                  if (ctx.type === 'data') {
+                    return ctx.chart.scales.y.getPixelForValue(0);
+                  }
+                },
+                delay: (ctx) => {
+                  if (ctx.type === 'data') {
+                    return ctx.index * 80; // staggered wave delay
+                  }
+                }
+              },
+              opacity: {
+                easing: 'easeInOutQuad',
+                duration: 1000,
+                from: 0,
+                to: 1,
+                delay: (ctx) => {
+                  if (ctx.type === 'data') {
+                    return ctx.index * 40;
+                  }
+                }
+              }
             },
             plugins: {
               legend: { display: false },
@@ -5900,10 +6678,30 @@
 
       const roleLabel = (role) => getRoleName(role, db);
 
+      const [approvalPrompt, setApprovalPrompt] = useState(null);
+
       const handleSave = (formData) => {
         const error = validateUserData(formData, editingUser?.id || null);
         if (error) {
           app.addToast(error, 'error');
+          return;
+        }
+
+        if (app.user?.role !== 'owner') {
+          // Redirect to approval
+          setApprovalPrompt({
+            title: editingUser ? 'Pengajuan Edit Pengguna' : 'Pengajuan Tambah Pengguna',
+            type: editingUser ? 'user_edit' : 'user_add',
+            targetId: editingUser?.id || null,
+            data: {
+              name: formData.name.trim(),
+              email: formData.email.trim().toLowerCase(),
+              role: formData.role,
+              password: formData.password || undefined
+            }
+          });
+          setShowForm(false);
+          setEditingUser(null);
           return;
         }
 
@@ -5948,8 +6746,21 @@
           app.addToast('Akun yang sedang login tidak bisa dinonaktifkan', 'error');
           return;
         }
-        if (targetUser.role === 'owner' && app.user?.role !== 'owner') {
+        if (targetUser.role === 'owner') {
           app.addToast('Anda tidak memiliki akses untuk mengubah status akun Pemilik!', 'error');
+          return;
+        }
+
+        if (app.user?.role !== 'owner') {
+          setApprovalPrompt({
+            title: 'Pengajuan Ubah Status Pengguna',
+            type: 'user_status',
+            targetId: targetUser.id,
+            data: {
+              name: targetUser.name,
+              active: !targetUser.active
+            }
+          });
           return;
         }
 
@@ -5970,14 +6781,26 @@
           app.addToast('Akun yang sedang login tidak bisa dihapus', 'error');
           return;
         }
-        if (targetUser.role === 'owner' && app.user?.role !== 'owner') {
+        if (targetUser.role === 'owner') {
           app.addToast('Anda tidak memiliki akses untuk menghapus akun Pemilik!', 'error');
           return;
         }
+
+        if (app.user?.role !== 'owner') {
+          setApprovalPrompt({
+            title: 'Pengajuan Hapus Pengguna',
+            type: 'user_delete',
+            targetId: targetUser.id,
+            data: {
+              name: targetUser.name
+            }
+          });
+          return;
+        }
+
         if (!confirm(`Hapus permanen pengguna "${targetUser.name}"? Pengguna tidak bisa dikembalikan lagi.`)) return;
 
         const db = getDB();
-        // Add to tombstone list so it never comes back from cloud sync
         db.deletedUserIds = db.deletedUserIds || [];
         if (!db.deletedUserIds.includes(targetUser.id)) {
           db.deletedUserIds.push(targetUser.id);
@@ -6004,6 +6827,16 @@
             </button>
             )}
           </div>
+
+          {app.user?.role !== 'owner' && (
+            <div className="mb-5 p-4 bg-amber-50/50 border border-amber-200 rounded-2xl flex items-start gap-3 text-xs text-amber-850 font-medium leading-normal animate-[fadeIn_0.2s_ease-out]">
+              <Icon name="info" size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-900">Perhatian: Modifikasi Pengguna Memerlukan Persetujuan</p>
+                <p className="text-amber-700/90 mt-0.5">Setiap tindakan penambahan, pengubahan data, pengaktifan/penonaktifan, atau penghapusan pengguna oleh selain Owner akan diajukan ke Owner untuk disetujui terlebih dahulu sebelum dieksekusi.</p>
+              </div>
+            </div>
+          )}
 
           <div className="mb-5 relative max-w-md">
             <Icon name="search" size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
@@ -6131,6 +6964,34 @@
               user={scannerUser}
               onClose={() => setScannerUser(null)}
               appState={app}
+            />
+          )}
+
+          {approvalPrompt && (
+            <ReasonModal
+              isOpen={!!approvalPrompt}
+              onClose={() => setApprovalPrompt(null)}
+              title={approvalPrompt.title}
+              onSubmit={(reason) => {
+                const currentDb = getDB();
+                const newApproval = {
+                  id: 'AP' + Date.now(),
+                  requesterId: app.user.id,
+                  requesterName: app.user.name,
+                  requesterRole: app.user.role,
+                  type: approvalPrompt.type,
+                  targetId: approvalPrompt.targetId,
+                  reason: reason.trim(),
+                  data: approvalPrompt.data || null,
+                  status: 'pending',
+                  createdAt: new Date().toISOString()
+                };
+                currentDb.adminApprovals.push(newApproval);
+                saveDB(currentDb);
+                app.refreshDB();
+                app.addToast('Pengajuan perubahan pengguna dikirim ke Owner', 'success');
+                setApprovalPrompt(null);
+              }}
             />
           )}
         </div>
@@ -7261,10 +8122,27 @@
           alert('Role wajib diisi');
           return;
         }
-        const cleanRole = selectedRole.toLowerCase().replace(/[^a-z]/g, '');
-        if ((cleanRole === 'owner' || cleanRole === 'pemilik' || cleanRole.includes('owner') || cleanRole.includes('pemilik')) && app.user?.role !== 'owner') {
-          logAuditAction('⚠️ PELANGGARAN KEAMANAN', 'Admin mencoba membuat/mengubah akun (' + email + ') menjadi role Owner. Aksi berhasil dicegah.', app.user);
-          alert('Akses Ditolak: Anda tidak diizinkan membuat atau menetapkan role Pemilik/Owner! Percobaan pelanggaran ini telah dicatat dan dilaporkan kepada Owner.');
+        const isEditingSelfOwner = user && user.role === 'owner';
+        const cleanRole = selectedRole.toLowerCase().replace(/[^a-z_]/g, '');
+        const isTargetingOwner = cleanRole === 'owner' || cleanRole === 'pemilik' || cleanRole.includes('owner') || cleanRole.includes('pemilik');
+        
+        if (isTargetingOwner && !isEditingSelfOwner) {
+          logAuditAction('⚠️ PELANGGARAN KEAMANAN', `Percobaan pembuatan/perubahan akun (${email}) dengan role Owner oleh ${app.user?.name || 'Tidak Dikenal'} (${app.user?.role}). Aksi berhasil dicegah.`, app.user);
+          
+          const db = getDB();
+          db.ownerNotifications = db.ownerNotifications || [];
+          db.ownerNotifications.unshift({
+            id: 'ON' + Date.now() + Math.random().toString().slice(-3),
+            type: 'security_alert',
+            title: '⚠️ PELANGGARAN KEAMANAN TERDETEKSI',
+            message: `User '${app.user?.name || 'Tidak Dikenal'}' (${app.user?.email || ''}) mencoba mendaftarkan/mengubah akun menjadi role Owner (Email Target: '${email}'). Tindakan tersebut berhasil digagalkan secara otomatis.`,
+            timestamp: new Date().toISOString(),
+            unread: true
+          });
+          saveDB(db);
+          app.refreshDB();
+
+          alert('AKSES DITOLAK!\n\nSistem memblokir mutlak penambahan akun dengan role Pemilik/Owner baru (hanya boleh ada 1 akun Owner utama di sistem). Percobaan pelanggaran keamanan ini telah dicatat secara permanen dan dilaporkan kepada Owner.');
           return;
         }
         onSave({ name, email, password, role: selectedRole });
@@ -7476,9 +8354,10 @@
     function AdminWorkspace() {
       const app = useContext(AppContext);
       const db = getDB();
-      const roleId = app.user?.roleId || '';
+      const roleId = app.user?.roleId || app.user?.role || '';
       
       const [activeTab, setActiveTab] = useState('');
+      const [selectedDivision, setSelectedDivision] = useState('operasional');
 
       // Memoized lists for sub-workspaces
       const staffList = useMemo(() => (db.users || []).filter(u => u.roleId !== 'owner' && u.roleId !== 'admin'), [db.users]);
@@ -7512,15 +8391,23 @@
       // Set default tab on load depending on roleId or baseRole
       useEffect(() => {
         const baseRole = app.user?.role || '';
-        if (roleId === 'admin_operasional') {
+        if (roleId === 'admin') {
+          setSelectedDivision('operasional');
+          setActiveTab('supplies');
+        } else if (roleId === 'admin_operasional') {
+          setSelectedDivision('operasional');
           setActiveTab('supplies');
         } else if (roleId === 'admin_keuangan') {
+          setSelectedDivision('keuangan');
           setActiveTab('invoices');
         } else if (roleId === 'admin_hr') {
+          setSelectedDivision('hr');
           setActiveTab('attendance');
         } else if (roleId === 'admin_marketing') {
+          setSelectedDivision('marketing');
           setActiveTab('coupons');
         } else if (roleId === 'admin_gudang') {
+          setSelectedDivision('gudang');
           setActiveTab('receipts');
         } else if (roleId === 'keuangan' || baseRole === 'keuangan') {
           setActiveTab('overview');
@@ -7534,6 +8421,37 @@
           setActiveTab('supplies');
         }
       }, [roleId, app.user?.role]);
+
+      // Real-time Sub-tab View Logger
+      useEffect(() => {
+        if (activeTab && app.user) {
+          const tabNames = {
+            supplies: 'Restok Otomatis & ATK',
+            schedules: 'Jadwal Kerja Staf',
+            tasks: 'Tugas Operasional',
+            invoices: 'Faktur & Keuangan',
+            expenses: 'Pengeluaran Kas',
+            verifications: 'Verifikasi Pembayaran',
+            attendance: 'Kehadiran Karyawan',
+            leave: 'Pengajuan Cuti',
+            payroll: 'Slip Gaji & Payroll',
+            recruits: 'Rekrutmen Karyawan',
+            coupons: 'Kupon Promo & Diskon',
+            leads: 'Database CRM Leads',
+            damaged: 'Barang Rusak (Stock Void)',
+            receipts: 'Penerimaan Barang',
+            kpi: 'KPI & Kinerja Staf',
+            petty_cash: 'Petty Cash',
+            tax: 'Kalkulator Pajak',
+            bundles: 'Paket Combo Bundling',
+            targets: 'Target Penjualan',
+            incidents: 'Laporan Insiden Toko',
+            handover: 'Buku Serah Terima Shift'
+          };
+          const tabLabel = tabNames[activeTab] || activeTab;
+          logUserActivity('page_view', `Membuka tab workspace: ${tabLabel}`);
+        }
+      }, [activeTab, app.user]);
 
       const markFeedbackRead = (id) => {
         const currentDb = getDB();
@@ -9987,8 +10905,39 @@
       };
 
       const renderOperasional = () => {
+        const totalSupplies = (db.supplies || []).length;
+        const totalSchedules = (db.schedules || []).length;
+        const totalTasks = (db.officeTasks || []).length;
+        const completedTasks = (db.officeTasks || []).filter(t => t.status === 'Selesai').length;
+        const taskPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
         return (
           <div className="space-y-6 text-left">
+            {/* OPERASIONAL MINI METRICS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Perlengkapan Terdaftar</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalSupplies} Barang</p>
+                </div>
+                <div className="p-2 bg-sky-50 text-sky-600 rounded-xl"><Icon name="box" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Jadwal Shift</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalSchedules} Shift</p>
+                </div>
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><Icon name="calendar" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Penyelesaian Checklist</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{taskPercent}% Selesai ({completedTasks}/{totalTasks})</p>
+                </div>
+                <div className="p-2 bg-amber-50 text-amber-600 rounded-xl"><Icon name="check-square" size={18} /></div>
+              </div>
+            </div>
+
             {/* TABS MENU */}
             <div className="flex border-b border-zinc-200 gap-4 mb-4">
               <button onClick={() => setActiveTab('supplies')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'supplies' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Logistik & Perlengkapan</button>
@@ -10263,8 +11212,40 @@
       };
 
       const renderKeuangan = () => {
+        const totalInvoices = (db.invoices || []).reduce((acc, x) => acc + (parseFloat(x.amount) || 0), 0);
+        const totalExpenses = (db.expenses || []).reduce((acc, x) => acc + (parseFloat(x.amount) || 0), 0);
+        const pettyList = db.pettyCash || [];
+        const totalPettyIn = pettyList.filter(x => x.type === 'in').reduce((acc, x) => acc + (parseFloat(x.amount) || 0), 0);
+        const totalPettyOut = pettyList.filter(x => x.type === 'out').reduce((acc, x) => acc + (parseFloat(x.amount) || 0), 0);
+        const pettyBalance = 2000000 + totalPettyIn - totalPettyOut;
+
         return (
           <div className="space-y-6 text-left">
+            {/* KEUANGAN MINI METRICS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Tagihan Pemasok</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">Rp {totalInvoices.toLocaleString('id-ID')}</p>
+                </div>
+                <div className="p-2 bg-sky-50 text-sky-600 rounded-xl"><Icon name="file-text" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Pengeluaran Manual</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">Rp {totalExpenses.toLocaleString('id-ID')}</p>
+                </div>
+                <div className="p-2 bg-rose-50 text-rose-600 rounded-xl"><Icon name="trending-down" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Saldo Kas Kecil (Petty Cash)</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">Rp {pettyBalance.toLocaleString('id-ID')}</p>
+                </div>
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><Icon name="wallet" size={18} /></div>
+              </div>
+            </div>
+
             <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('invoices')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'invoices' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Invoice Pemasok</button>
               <button onClick={() => setActiveTab('expenses')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'expenses' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pengeluaran Manual</button>
@@ -10469,8 +11450,37 @@
       };
 
       const renderHR = () => {
+        const totalStaff = (db.users || []).filter(u => u.role !== 'owner').length;
+        const pendingLeaves = (db.leaveRequests || []).filter(l => l.status === 'pending').length;
+        const totalAttendance = (db.attendance || []).length;
+
         return (
           <div className="space-y-6 text-left">
+            {/* HR MINI METRICS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Anggota Staf</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalStaff} Orang</p>
+                </div>
+                <div className="p-2 bg-sky-50 text-sky-600 rounded-xl"><Icon name="users" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Cuti Menunggu Approval</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{pendingLeaves} Pengajuan</p>
+                </div>
+                <div className="p-2 bg-amber-50 text-amber-600 rounded-xl"><Icon name="clock" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Total Catatan Kehadiran</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalAttendance} Entri</p>
+                </div>
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><Icon name="check-circle" size={18} /></div>
+              </div>
+            </div>
+
             <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('attendance')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'attendance' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Absensi Staf</button>
               <button onClick={() => setActiveTab('leaves')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'leaves' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Pengajuan Cuti</button>
@@ -10967,8 +11977,37 @@
       };
 
       const renderMarketing = () => {
+        const totalCoupons = (db.promoCoupons || []).filter(c => c.active !== false).length;
+        const totalCRM = (db.crmLeads || []).length;
+        const totalBundles = (db.bundles || []).length;
+
         return (
           <div className="space-y-6 text-left">
+            {/* MARKETING MINI METRICS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Voucher Kupon Aktif</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalCoupons} Kupon</p>
+                </div>
+                <div className="p-2 bg-sky-50 text-sky-600 rounded-xl"><Icon name="tag" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Database Prospek CRM</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalCRM} Kontak</p>
+                </div>
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><Icon name="users" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Paket Bundling Aktif</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalBundles} Paket</p>
+                </div>
+                <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl"><Icon name="package" size={18} /></div>
+              </div>
+            </div>
+
             <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('coupons')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'coupons' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Kupon Diskon POS</button>
               <button onClick={() => setActiveTab('crm')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'crm' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>CRM & Prospek Pelanggan</button>
@@ -11276,9 +12315,38 @@
       };
 
       const renderGudang = () => {
+        const totalReceipts = (db.goodsReceipts || []).length;
+        const totalDamaged = (db.damagedGoods || []).length;
+        const totalLedger = (db.stockLedger || []).length;
         const ledgerList = (db.stockLedger || []).sort((a, b) => new Date(b.date) - new Date(a.date));
+
         return (
           <div className="space-y-6 text-left">
+            {/* GUDANG MINI METRICS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Penerimaan Barang Masuk</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalReceipts} Penerimaan</p>
+                </div>
+                <div className="p-2 bg-sky-50 text-sky-600 rounded-xl"><Icon name="arrow-down-circle" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Laporan Barang Rusak</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalDamaged} Kasus</p>
+                </div>
+                <div className="p-2 bg-rose-50 text-rose-600 rounded-xl"><Icon name="alert-triangle" size={18} /></div>
+              </div>
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                <div>
+                  <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Histori Mutasi Stok (Ledger)</p>
+                  <p className="text-xl font-bold text-zinc-800 mt-1">{totalLedger} Catatan</p>
+                </div>
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl"><Icon name="database" size={18} /></div>
+              </div>
+            </div>
+
             <div className="flex border-b border-zinc-200 gap-4 mb-4 overflow-x-auto whitespace-nowrap scrollbar-none">
               <button onClick={() => setActiveTab('receipts')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'receipts' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Penerimaan Barang</button>
               <button onClick={() => setActiveTab('opname')} className={`pb-2.5 font-bold text-sm transition ${activeTab === 'opname' ? 'border-b-2 border-sky-600 text-sky-600' : 'text-zinc-400'}`}>Stock Opname</button>
@@ -11320,7 +12388,7 @@
                           <option value="">-- Pilih Produk --</option>
                           {db.products.filter(p => p.active !== false).map(p => (
                             <option key={p.id} value={p.id}>{p.name} (Stok saat ini: {p.stock} pcs)</option>
-                          )}
+                          ))}
                         </select>
                       </div>
                     ) : (
@@ -11346,7 +12414,7 @@
                             >
                               {db.categories.map(cat => (
                                 <option key={cat} value={cat}>{cat}</option>
-                              )}
+                              ))}
                             </select>
                           </div>
                           <div>
@@ -11468,7 +12536,7 @@
                               </div>
                             </td>
                           </tr>
-                        )}
+                        ))}
                         {(db.goodsReceipts || []).length === 0 && (
                           <tr>
                             <td colSpan="8" className="text-center p-8 text-zinc-400">
@@ -11657,6 +12725,7 @@
                   </div>
                 </div>
               </div>
+            )}
             {editingGoodsReceipt && (
               <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
                 <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-[scaleIn_0.2s_ease-out]">
@@ -11706,7 +12775,7 @@
                           <option value="">-- Pilih Produk --</option>
                           {db.products.filter(p => p.active !== false).map(p => (
                             <option key={p.id} value={p.id}>{p.name} (Stok: {p.stock})</option>
-                          )}
+                          ))}
                         </select>
                       </div>
                     ) : (
@@ -11738,7 +12807,7 @@
                             >
                               {db.categories.map(cat => (
                                 <option key={cat} value={cat}>{cat}</option>
-                              )}
+                              ))}
                             </select>
                           </div>
                           <div>
@@ -11858,6 +12927,42 @@
           </div>
 
           {/* DYNAMIC SUB-WORKSPACE PAGE */}
+          {roleId === 'admin' && (
+            <div className="mb-6 bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm text-left animate-[fadeIn_0.2s_ease-out]">
+              <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">Departemen / Divisi Admin</label>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { id: 'operasional', label: '📦 Operasional', defaultTab: 'supplies' },
+                  { id: 'keuangan', label: '💼 Keuangan (Finance)', defaultTab: 'invoices' },
+                  { id: 'hr', label: '👥 Kepegawaian (HR)', defaultTab: 'attendance' },
+                  { id: 'marketing', label: '📢 Sales & Marketing', defaultTab: 'coupons' },
+                  { id: 'gudang', label: '🗃️ Gudang & Logistik', defaultTab: 'receipts' }
+                ].map(div => (
+                  <button
+                    key={div.id}
+                    onClick={() => {
+                      setSelectedDivision(div.id);
+                      setActiveTab(div.defaultTab);
+                    }}
+                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border ${
+                      selectedDivision === div.id
+                        ? 'bg-sky-50 border-sky-200 text-sky-700 shadow-sm'
+                        : 'bg-zinc-50/50 border-zinc-200 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-800'
+                    }`}
+                  >
+                    {div.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {roleId === 'admin' && selectedDivision === 'operasional' && renderOperasional()}
+          {roleId === 'admin' && selectedDivision === 'keuangan' && renderKeuangan()}
+          {roleId === 'admin' && selectedDivision === 'hr' && renderHR()}
+          {roleId === 'admin' && selectedDivision === 'marketing' && renderMarketing()}
+          {roleId === 'admin' && selectedDivision === 'gudang' && renderGudang()}
+
           {roleId === 'admin_operasional' && renderOperasional()}
           {roleId === 'admin_keuangan' && renderKeuangan()}
           {roleId === 'admin_hr' && renderHR()}
@@ -11880,16 +12985,23 @@
         menuItems.push({ id: 'owner_dashboard', icon: 'layout-dashboard', label: 'Dashboard Owner' });
       }
       const hasWorkspace = [
-        'admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang', 
+        'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang', 
         'keuangan', 'manager', 'supervisor', 'staff'
       ].includes(user?.roleId) || [
+        'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang',
         'keuangan', 'manager', 'supervisor', 'staff'
       ].includes(user?.role);
 
       if (hasWorkspace) {
         let label = 'Workspace Admin';
-        const activeRole = ['keuangan', 'manager', 'supervisor', 'staff'].includes(user?.roleId) ? user?.roleId : user?.role;
-        if (activeRole === 'keuangan') label = 'Workspace Keuangan';
+        const activeRole = user?.roleId || user?.role || '';
+        if (activeRole === 'admin') label = 'Workspace Admin Utama';
+        else if (activeRole === 'admin_operasional') label = 'Workspace Admin Ops';
+        else if (activeRole === 'admin_keuangan') label = 'Workspace Admin Finance';
+        else if (activeRole === 'admin_hr') label = 'Workspace Admin HR';
+        else if (activeRole === 'admin_marketing') label = 'Workspace Admin Marketing';
+        else if (activeRole === 'admin_gudang') label = 'Workspace Admin Gudang';
+        else if (activeRole === 'keuangan') label = 'Workspace Keuangan';
         else if (activeRole === 'manager') label = 'Workspace Manajer';
         else if (activeRole === 'supervisor') label = 'Workspace Supervisor';
         else if (activeRole === 'staff') label = 'Workspace Staf';
@@ -11908,7 +13020,7 @@
       }
 
       return (
-        <aside className={`${sidebar ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 z-40 w-64 bg-zinc-900 text-white transition-transform duration-300 flex flex-col`}>
+        <aside className={`${sidebar ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 z-40 w-64 bg-zinc-900 text-white transition-transform duration-300 flex flex-col no-print`}>
           <div className="h-16 flex items-center px-6 border-b border-zinc-800 justify-between md:justify-start">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-sky-500 rounded-lg flex items-center justify-center">
@@ -11977,7 +13089,15 @@
       if (app.user?.role === 'owner') {
         menuItems.push({ id: 'owner_dashboard', icon: 'layout-dashboard', label: 'Dashboard' });
       }
-      if (['admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'].includes(app.user?.roleId)) {
+      const hasWorkspace = [
+        'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang', 
+        'keuangan', 'manager', 'supervisor', 'staff'
+      ].includes(app.user?.roleId) || [
+        'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr', 'admin_marketing', 'admin_gudang',
+        'keuangan', 'manager', 'supervisor', 'staff'
+      ].includes(app.user?.role);
+
+      if (hasWorkspace) {
         menuItems.push({ id: 'admin_workspace', icon: 'briefcase', label: 'Workspace' });
       }
       menuItems.push({ id: 'pos', icon: 'shopping-cart', label: 'POS' });
@@ -12612,7 +13732,7 @@
               )}
               
               <div className="flex-1 flex flex-col overflow-hidden relative">
-                <Header />
+                <div className="no-print"><Header /></div>
                 <main className="flex-1 overflow-y-auto p-4 md:p-6 custom-scroll">
                   <div className="max-w-7xl mx-auto h-full">
                     {appState.page === 'owner_dashboard' && <OwnerDashboard />}
@@ -12624,7 +13744,7 @@
                     {appState.page === 'purchases' && <PurchasesPage />}
                   </div>
                 </main>
-                <BottomNav />
+                <div className="no-print"><BottomNav /></div>
               </div>
             </div>
           )}
@@ -12741,6 +13861,121 @@
         </AppContext.Provider>
       );
     }
+
+    // ==================== GLOBAL AUDIT & LOGGER AKTIVITAS ====================
+    function logUserActivity(type, details) {
+      try {
+        const activeUserStr = sessionStorage.getItem('pos_user');
+        if (!activeUserStr) return;
+        const activeUser = JSON.parse(activeUserStr);
+        
+        // Kita hanya merekam aktivitas anggota SELAIN owner
+        if (activeUser.role === 'owner') return;
+
+        const db = getDB();
+        db.activityLogs = db.activityLogs || [];
+        db.activityLogs.unshift({
+          id: 'ACT' + Date.now() + Math.random().toString().slice(-3),
+          user: activeUser.name || activeUser.email,
+          email: activeUser.email,
+          role: getRoleName(activeUser.role, db),
+          type: type, // 'key_input', 'click', 'page_view', 'data_mutasi'
+          details: details,
+          timestamp: new Date().toISOString()
+        });
+
+        if (db.activityLogs.length > 1000) {
+          db.activityLogs = db.activityLogs.slice(0, 1000);
+        }
+        saveDB(db);
+      } catch (err) {
+        console.error("Gagal mencatat log aktivitas Karyawan:", err);
+      }
+    }
+
+    // Event Listener Global (Keylogger & Clicklogger)
+    (function() {
+      let debounceTimeout = null;
+      let lastInputTarget = null;
+      let inputBuffer = '';
+
+      // 1. Keylogger (dengan debounce 1.5 detik, saring password)
+      document.addEventListener('input', function(e) {
+        const target = e.target;
+        if (!target) return;
+
+        // Proteksi kolom password dari perekaman
+        if (target.type === 'password' || target.getAttribute('type') === 'password') {
+          return;
+        }
+
+        // Dapatkan nama/deskripsi field terdekat
+        let fieldName = target.placeholder || target.name || target.id || '';
+        if (!fieldName) {
+          const parent = target.parentElement;
+          if (parent) {
+            const labelEl = parent.querySelector('label');
+            if (labelEl) fieldName = labelEl.textContent.trim();
+          }
+        }
+        if (!fieldName) fieldName = 'Input Field';
+
+        const value = target.value;
+
+        // Jika pindah field, log data field sebelumnya dulu
+        if (lastInputTarget && lastInputTarget !== target && inputBuffer.trim()) {
+          const oldName = lastInputTarget._fieldName || 'Input Field';
+          logUserActivity('key_input', `Menulis di [${oldName}]: "${inputBuffer}"`);
+          inputBuffer = '';
+        }
+
+        lastInputTarget = target;
+        target._fieldName = fieldName;
+        inputBuffer = value;
+
+        clearTimeout(debounceTimeout);
+        debounceTimeout = setTimeout(function() {
+          if (inputBuffer.trim()) {
+            logUserActivity('key_input', `Menulis di [${fieldName}]: "${inputBuffer}"`);
+            inputBuffer = '';
+            lastInputTarget = null;
+          }
+        }, 1500);
+      });
+
+      // 2. Clicklogger (menyaring tombol numerik kasir POS)
+      document.addEventListener('click', function(e) {
+        let target = e.target;
+        while (target && target !== document.body) {
+          const tagName = target.tagName.toLowerCase();
+          const role = target.getAttribute('role');
+          const isClickable = tagName === 'button' || tagName === 'a' || tagName === 'select' || 
+                              (tagName === 'input' && ['button', 'submit', 'checkbox', 'radio'].includes(target.type));
+          
+          if (isClickable || role === 'button' || target.classList.contains('cursor-pointer')) {
+            const btnText = target.textContent?.trim() || target.value || target.title || '';
+            const btnClass = target.className || '';
+
+            // Abaikan klik pada tombol angka keypad kasir POS (spam)
+            const isKeypad = /^[0-9.C]$/.test(btnText) || btnText === '00' || btnClass.includes('keypad') || btnClass.includes('numpad');
+            if (isKeypad) return;
+
+            let buttonLabel = btnText;
+            if (!buttonLabel) {
+              const svgEl = target.querySelector('svg');
+              if (svgEl) {
+                buttonLabel = svgEl.getAttribute('data-icon') || 'icon';
+              }
+            }
+            if (!buttonLabel) buttonLabel = target.id || 'Elemen';
+
+            logUserActivity('click', `Mengklik: "${buttonLabel.substring(0, 50)}"`);
+            break;
+          }
+          target = target.parentElement;
+        }
+      });
+    })();
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<ErrorBoundary><App /></ErrorBoundary>);
