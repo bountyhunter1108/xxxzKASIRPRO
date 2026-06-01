@@ -1527,7 +1527,7 @@
           <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden animate-[scaleIn_0.3s_ease-out]">
             <div className="bg-sky-600 p-8 text-center text-white">
               <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-4 overflow-hidden border border-white/20 shadow-inner">
-                <img src="./logo.jpg" alt="Logo" className="w-full h-full object-cover" />
+                <img src="./logo_smile.jpg" alt="Logo" className="w-full h-full object-cover" />
               </div>
               <h1 className="text-2xl font-bold">Smile POS</h1>
               <p className="text-sky-100 mt-1 text-sm">Sistem Kasir Pintar</p>
@@ -1821,6 +1821,12 @@
       const [selectedStaffDetail, setSelectedStaffDetail] = useState(null);
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
+      const radarChartRef = useRef(null);
+      const donutChartRef = useRef(null);
+      const barChartCategoryRef = useRef(null);
+      const radarChartInstance = useRef(null);
+      const donutChartInstance = useRef(null);
+      const barChartCategoryInstance = useRef(null);
 
       const handleApproveRequest = (req) => {
         const currentDb = getDB();
@@ -2267,6 +2273,97 @@
         return { chartLabels: labels, chartDataSales: sales, chartDataProfit: profits };
       }, [filteredTx]);
 
+      // Category Sales Memo
+      const categorySales = useMemo(() => {
+        const catMap = {};
+        const txs = db.transactions ? db.transactions.filter(t => !t.deleted) : [];
+        const now = new Date();
+        let filtered = txs;
+        if (filter === 'today') {
+          filtered = txs.filter(t => new Date(t.date).toDateString() === now.toDateString());
+        } else if (filter === '7days') {
+          const past = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          filtered = txs.filter(t => new Date(t.date) >= past);
+        } else if (filter === 'month') {
+          filtered = txs.filter(t => {
+            const d = new Date(t.date);
+            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+          });
+        }
+        filtered.forEach(t => {
+          t.items.forEach(item => {
+            const prod = db.products ? db.products.find(p => p.id === item.id) : null;
+            const cat = prod && prod.category ? prod.category : 'Umum';
+            catMap[cat] = (catMap[cat] || 0) + (item.price * item.qty);
+          });
+        });
+        return catMap;
+      }, [db.transactions, db.products, filter]);
+
+      // Payment Distribution Memo
+      const paymentDistribution = useMemo(() => {
+        const payMap = { cash: 0, qris: 0 };
+        const txs = db.transactions ? db.transactions.filter(t => !t.deleted) : [];
+        const now = new Date();
+        let filtered = txs;
+        if (filter === 'today') {
+          filtered = txs.filter(t => new Date(t.date).toDateString() === now.toDateString());
+        } else if (filter === '7days') {
+          const past = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          filtered = txs.filter(t => new Date(t.date) >= past);
+        } else if (filter === 'month') {
+          filtered = txs.filter(t => {
+            const d = new Date(t.date);
+            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+          });
+        }
+        filtered.forEach(t => {
+          const method = t.method || 'cash';
+          payMap[method] = (payMap[method] || 0) + (t.total || 0);
+        });
+        return payMap;
+      }, [db.transactions, filter]);
+
+      // Radar Performance Metrics Memo
+      const radarMetrics = useMemo(() => {
+        const txs = db.transactions ? db.transactions.filter(t => !t.deleted) : [];
+        const now = new Date();
+        let filtered = txs;
+        if (filter === 'today') {
+          filtered = txs.filter(t => new Date(t.date).toDateString() === now.toDateString());
+        } else if (filter === '7days') {
+          const past = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          filtered = txs.filter(t => new Date(t.date) >= past);
+        } else if (filter === 'month') {
+          filtered = txs.filter(t => {
+            const d = new Date(t.date);
+            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+          });
+        }
+        const totalRev = filtered.reduce((s, t) => s + (t.total || 0), 0);
+        const totalCost = filtered.reduce((s, t) => s + (t.cost || 0), 0);
+        const profitScore = totalRev > 0 ? Math.min(100, Math.max(0, ((totalRev - totalCost) / totalRev) * 100 * 2)) : 0;
+        const qrisCount = filtered.filter(t => t.method === 'qris').length;
+        const qrisRatio = filtered.length > 0 ? (qrisCount / filtered.length) * 100 : 0;
+        const memberCount = filtered.filter(t => t.memberId || t.memberName).length;
+        const memberRatio = filtered.length > 0 ? (memberCount / filtered.length) * 100 : 0;
+        const totalActiveProducts = db.products ? db.products.filter(p => p.active !== false).length : 0;
+        const uniqueSoldProducts = new Set();
+        filtered.forEach(t => t.items.forEach(i => uniqueSoldProducts.add(i.id)));
+        const turnoverRatio = totalActiveProducts > 0 ? (uniqueSoldProducts.size / totalActiveProducts) * 100 : 0;
+        const shifts = db.shifts || [];
+        const closedShifts = shifts.filter(s => s.status === 'closed');
+        const perfectShifts = closedShifts.filter(s => s.difference === 0).length;
+        const cashierScore = closedShifts.length > 0 ? (perfectShifts / closedShifts.length) * 100 : 80;
+        return [
+          Math.round(Math.max(10, profitScore)), 
+          Math.round(Math.max(10, qrisRatio)), 
+          Math.round(Math.max(10, memberRatio)), 
+          Math.round(Math.max(10, turnoverRatio)), 
+          Math.round(Math.max(10, cashierScore))
+        ];
+      }, [db.transactions, db.products, db.shifts, filter]);
+
       // Render chart
       useEffect(() => {
         if (dashboardTab !== 'overview' || !chartRef.current) return;
@@ -2407,6 +2504,201 @@
         return () => { if (chartInstance.current) chartInstance.current.destroy(); };
       }, [chartLabels, chartDataSales, chartDataProfit, dashboardTab]);
 
+      // Owner Dashboard New Visualizations Effect
+      useEffect(() => {
+        if (dashboardTab !== 'overview') return;
+
+        // Clean up previous instances
+        if (radarChartInstance.current) radarChartInstance.current.destroy();
+        if (donutChartInstance.current) donutChartInstance.current.destroy();
+        if (barChartCategoryInstance.current) barChartCategoryInstance.current.destroy();
+
+        // 1. Radar Chart (Kinerja Operasional - Foto 1 & 2)
+        if (radarChartRef.current) {
+          radarChartInstance.current = new Chart(radarChartRef.current, {
+            type: 'radar',
+            data: {
+              labels: ['Profitabilitas', 'Digitalisasi QRIS', 'Loyalitas Member', 'Perputaran Stok', 'Akurasi Kasir'],
+              datasets: [{
+                label: 'Skor Performa',
+                data: radarMetrics,
+                backgroundColor: 'rgba(14, 165, 233, 0.15)', // Sky-500 transparan
+                borderColor: '#0ea5e9', // Sky-500 pastel
+                borderWidth: 2,
+                pointBackgroundColor: '#0ea5e9',
+                pointBorderColor: '#fff',
+                pointHoverBackgroundColor: '#fff',
+                pointHoverBorderColor: '#0ea5e9',
+                pointRadius: 3.5
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animations: {
+                r: {
+                  type: 'number',
+                  easing: 'easeOutBack',
+                  duration: 1400
+                }
+              },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                  padding: 10,
+                  cornerRadius: 8,
+                  callbacks: {
+                    label: (ctx) => ` Skor: ${ctx.raw} / 100`
+                  }
+                }
+              },
+              scales: {
+                r: {
+                  angleLines: { color: 'rgba(0, 0, 0, 0.05)' },
+                  grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                  pointLabels: {
+                    font: { family: 'Inter', size: 9, weight: 'bold' },
+                    color: '#64748b'
+                  },
+                  ticks: {
+                    display: false,
+                    stepSize: 20
+                  },
+                  suggestedMin: 0,
+                  suggestedMax: 100
+                }
+              }
+            }
+          });
+        }
+
+        // 2. Donut Chart (Distribusi Pembayaran - Foto 2 & 5)
+        if (donutChartRef.current) {
+          donutChartInstance.current = new Chart(donutChartRef.current, {
+            type: 'doughnut',
+            data: {
+              labels: ['Tunai (Cash)', 'Nontunai (QRIS)'],
+              datasets: [{
+                data: [paymentDistribution.cash, paymentDistribution.qris],
+                backgroundColor: [
+                  '#f59e0b', // Amber (Tunai)
+                  '#2cc2d6'  // Cyan (QRIS)
+                ],
+                borderWidth: 2,
+                borderColor: '#fff',
+                hoverOffset: 4
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              cutout: '65%',
+              animations: {
+                animateScale: { duration: 1000, easing: 'easeOutBack' },
+                animateRotate: { duration: 1200, easing: 'easeOutBack' }
+              },
+              plugins: {
+                legend: {
+                  display: true,
+                  position: 'bottom',
+                  labels: {
+                    boxWidth: 8,
+                    boxHeight: 8,
+                    usePointStyle: true,
+                    pointStyle: 'circle',
+                    font: { family: 'Inter', size: 10, weight: 'bold' },
+                    color: '#64748b'
+                  }
+                },
+                tooltip: {
+                  backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                  padding: 10,
+                  cornerRadius: 8,
+                  callbacks: {
+                    label: (ctx) => ` ${ctx.label}: Rp ${ctx.raw.toLocaleString('id-ID')}`
+                  }
+                }
+              }
+            }
+          });
+        }
+
+        // 3. Bar Chart Kategori Produk (Foto 3 & 5)
+        if (barChartCategoryRef.current) {
+          const catLabels = Object.keys(categorySales);
+          const catData = Object.values(categorySales);
+
+          barChartCategoryInstance.current = new Chart(barChartCategoryRef.current, {
+            type: 'bar',
+            data: {
+              labels: catLabels.length > 0 ? catLabels : ['Umum'],
+              datasets: [{
+                label: 'Penjualan',
+                data: catData.length > 0 ? catData : [0],
+                backgroundColor: '#38bdf8', // Sky-400 pastel
+                borderRadius: { topLeft: 5, topRight: 5, bottomLeft: 0, bottomRight: 0 },
+                borderSkipped: false,
+                barPercentage: 0.5
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animations: {
+                y: {
+                  type: 'number',
+                  easing: 'easeOutBack',
+                  duration: 1000,
+                  from: (ctx) => {
+                    if (ctx.type === 'data') return ctx.chart.scales.y.getPixelForValue(0);
+                  },
+                  delay: (ctx) => {
+                    if (ctx.type === 'data') return ctx.index * 60;
+                  }
+                }
+              },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                  padding: 10,
+                  cornerRadius: 8,
+                  callbacks: {
+                    label: (ctx) => ` Rp ${ctx.raw.toLocaleString('id-ID')}`
+                  }
+                }
+              },
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  grid: { color: 'rgba(0, 0, 0, 0.03)', drawBorder: false },
+                  ticks: {
+                    callback: (val) => {
+                      if (val >= 1000000) return 'Rp ' + (val / 1000000).toFixed(1) + ' jt';
+                      if (val >= 1000) return 'Rp ' + (val / 1000).toFixed(0) + 'k';
+                      return 'Rp ' + val;
+                    },
+                    font: { family: 'Inter', size: 9 },
+                    color: '#94a3b8'
+                  }
+                },
+                x: {
+                  grid: { display: false },
+                  ticks: { font: { family: 'Inter', size: 9 }, color: '#94a3b8' }
+                }
+              }
+            }
+          });
+        }
+
+        return () => {
+          if (radarChartInstance.current) radarChartInstance.current.destroy();
+          if (donutChartInstance.current) donutChartInstance.current.destroy();
+          if (barChartCategoryInstance.current) barChartCategoryInstance.current.destroy();
+        };
+      }, [dashboardTab, radarMetrics, paymentDistribution, categorySales]);
+
       const renderOverview = () => (
         <>
           {/* Cards metrics */}
@@ -2483,6 +2775,42 @@
                     </div>
                   ))
                 )}
+              </div>
+            </div>
+          </div>
+
+          {/* Dashboard Command Center - Analitik Visual Kustom (Radar, Donut, Category Bar) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+            {/* Radar Chart (Analisis Kinerja Toko) */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex flex-col h-80 animate-[fadeIn_0.2s_ease-out]">
+              <h4 className="font-bold text-xs text-zinc-700 mb-4 flex items-center justify-between border-b border-zinc-100 pb-2">
+                <span className="flex items-center gap-1.5"><Icon name="activity" size={14} className="text-sky-500" /> Kinerja Operasional & Layanan</span>
+                <span className="text-[9px] text-zinc-400 bg-zinc-50 border border-zinc-200 px-2 py-0.5 rounded-full font-bold uppercase">Radar</span>
+              </h4>
+              <div className="flex-1 relative">
+                <canvas ref={radarChartRef}></canvas>
+              </div>
+            </div>
+
+            {/* Doughnut Chart (Metode Pembayaran) */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex flex-col h-80 animate-[fadeIn_0.2s_ease-out_0.1s]">
+              <h4 className="font-bold text-xs text-zinc-700 mb-4 flex items-center justify-between border-b border-zinc-100 pb-2">
+                <span className="flex items-center gap-1.5"><Icon name="wallet" size={14} className="text-amber-500" /> Distribusi Metode Pembayaran</span>
+                <span className="text-[9px] text-zinc-400 bg-zinc-50 border border-zinc-200 px-2 py-0.5 rounded-full font-bold uppercase">Donut</span>
+              </h4>
+              <div className="flex-1 relative">
+                <canvas ref={donutChartRef}></canvas>
+              </div>
+            </div>
+
+            {/* Horizontal Bar Chart (Kategori Terlaris) */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex flex-col h-80 animate-[fadeIn_0.2s_ease-out_0.2s]">
+              <h4 className="font-bold text-xs text-zinc-700 mb-4 flex items-center justify-between border-b border-zinc-100 pb-2">
+                <span className="flex items-center gap-1.5"><Icon name="bar-chart-2" size={14} className="text-emerald-500" /> Penjualan per Kategori Produk</span>
+                <span className="text-[9px] text-zinc-400 bg-zinc-50 border border-zinc-200 px-2 py-0.5 rounded-full font-bold uppercase">Batang</span>
+              </h4>
+              <div className="flex-1 relative">
+                <canvas ref={barChartCategoryRef}></canvas>
               </div>
             </div>
           </div>
@@ -5822,15 +6150,20 @@
         return txs;
       }, [allTx, filter]);
 
-      const { chartLabels, chartData } = useMemo(() => {
+      const { chartLabels, chartDataSales, chartDataProfit } = useMemo(() => {
         const daily = {};
         filteredTx.forEach(t => {
           const d = new Date(t.date).toLocaleDateString('id-ID', { month: 'short', day: 'numeric' });
-          daily[d] = (daily[d] || 0) + t.total;
+          if (!daily[d]) {
+            daily[d] = { sales: 0, profit: 0 };
+          }
+          daily[d].sales += (t.total || 0);
+          daily[d].profit += ((t.total || 0) - (t.cost || 0));
         });
         const labels = Object.keys(daily).reverse();
-        const data = Object.values(daily).reverse();
-        return { chartLabels: labels, chartData: data };
+        const sales = labels.map(l => daily[l].sales);
+        const profits = labels.map(l => daily[l].profit);
+        return { chartLabels: labels, chartDataSales: sales, chartDataProfit: profits };
       }, [filteredTx]);
 
       const totalSales = useMemo(() => filteredTx.reduce((s, t) => s + (t.total || 0), 0), [filteredTx]);
@@ -5949,71 +6282,141 @@
         if (chartInstance.current) chartInstance.current.destroy();
         
         const ctx = chartRef.current.getContext('2d');
-        let datasetConfig = {};
+        
+        // Gradient Pendapatan (Orange/Amber Pastel Lembut - Foto 3)
+        const gradientSales = ctx.createLinearGradient(0, 0, 0, 240);
+        gradientSales.addColorStop(0, 'rgba(245, 158, 11, 0.25)'); 
+        gradientSales.addColorStop(1, 'rgba(245, 158, 11, 0.0)');
+
+        // Gradient Laba Bersih (Cyan Pastel Lembut - Foto 2)
+        const gradientProfit = ctx.createLinearGradient(0, 0, 0, 240);
+        gradientProfit.addColorStop(0, 'rgba(14, 165, 233, 0.25)'); 
+        gradientProfit.addColorStop(1, 'rgba(14, 165, 233, 0.0)');
+
+        let datasets = [];
 
         if (chartType === 'line') {
-          const gradient = ctx.createLinearGradient(0, 0, 0, 240);
-          gradient.addColorStop(0, 'rgba(99, 102, 241, 0.4)'); // Violet-indigo
-          gradient.addColorStop(0.5, 'rgba(168, 85, 247, 0.15)'); // Purple accent
-          gradient.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
-          
-          datasetConfig = {
-            type: 'line',
-            label: 'Pendapatan (Rp)',
-            data: chartData,
-            borderColor: '#6366f1', // Indigo-500
-            backgroundColor: gradient,
-            borderWidth: 3.5,
-            pointBackgroundColor: '#fff',
-            pointBorderColor: '#6366f1',
-            pointBorderWidth: 3,
-            pointRadius: 4,
-            pointHoverRadius: 7,
-            pointHoverBackgroundColor: '#6366f1',
-            pointHoverBorderColor: '#fff',
-            pointHoverBorderWidth: 3,
-            fill: true,
-            tension: 0.4
-          };
+          datasets = [
+            {
+              type: 'line',
+              label: 'Pendapatan',
+              data: chartDataSales,
+              borderColor: '#f59e0b', // Orange Pastel Lembut
+              backgroundColor: gradientSales,
+              borderWidth: 3,
+              pointBackgroundColor: '#fff',
+              pointBorderColor: '#f59e0b',
+              pointBorderWidth: 2.5,
+              pointRadius: 4,
+              pointHoverRadius: 6,
+              pointHoverBackgroundColor: '#f59e0b',
+              pointHoverBorderColor: '#fff',
+              pointHoverBorderWidth: 2,
+              fill: true,
+              tension: 0.4
+            },
+            {
+              type: 'line',
+              label: 'Laba Bersih',
+              data: chartDataProfit,
+              borderColor: '#0ea5e9', // Cyan Pastel Lembut
+              backgroundColor: gradientProfit,
+              borderWidth: 3,
+              pointBackgroundColor: '#fff',
+              pointBorderColor: '#0ea5e9',
+              pointBorderWidth: 2.5,
+              pointRadius: 4,
+              pointHoverRadius: 6,
+              pointHoverBackgroundColor: '#0ea5e9',
+              pointHoverBorderColor: '#fff',
+              pointHoverBorderWidth: 2,
+              fill: true,
+              tension: 0.4
+            }
+          ];
         } else {
-          const gradient = ctx.createLinearGradient(0, 0, 0, 240);
-          gradient.addColorStop(0, '#6366f1'); // Indigo-500
-          gradient.addColorStop(1, '#a855f7'); // Purple-500
-          
-          datasetConfig = {
-            type: 'bar',
-            label: 'Pendapatan (Rp)',
-            data: chartData,
-            borderColor: 'transparent',
-            backgroundColor: gradient,
-            borderWidth: 0,
-            borderRadius: { topLeft: 10, topRight: 10, bottomLeft: 0, bottomRight: 0 },
-            borderSkipped: false,
-            barPercentage: 0.45
-          };
+          // Bar Gradient Pendapatan
+          const barGradSales = ctx.createLinearGradient(0, 0, 0, 240);
+          barGradSales.addColorStop(0, '#fbbf24');
+          barGradSales.addColorStop(1, '#f59e0b');
+
+          // Bar Gradient Laba Bersih
+          const barGradProfit = ctx.createLinearGradient(0, 0, 0, 240);
+          barGradProfit.addColorStop(0, '#38bdf8');
+          barGradProfit.addColorStop(1, '#0ea5e9');
+
+          datasets = [
+            {
+              type: 'bar',
+              label: 'Pendapatan',
+              data: chartDataSales,
+              borderColor: 'transparent',
+              backgroundColor: barGradSales,
+              borderWidth: 0,
+              borderRadius: { topLeft: 6, topRight: 6, bottomLeft: 0, bottomRight: 0 },
+              borderSkipped: false,
+              barPercentage: 0.7,
+              categoryPercentage: 0.6
+            },
+            {
+              type: 'bar',
+              label: 'Laba Bersih',
+              data: chartDataProfit,
+              borderColor: 'transparent',
+              backgroundColor: barGradProfit,
+              borderWidth: 0,
+              borderRadius: { topLeft: 6, topRight: 6, bottomLeft: 0, bottomRight: 0 },
+              borderSkipped: false,
+              barPercentage: 0.7,
+              categoryPercentage: 0.6
+            }
+          ];
         }
+
+        // Custom plugin to draw numbers on top of chart elements (Foto 2, 3 & 4 labels)
+        const customLabelsPlugin = {
+          id: 'customLabels',
+          afterDatasetsDraw(chart) {
+            const { ctx } = chart;
+            ctx.save();
+            ctx.font = 'bold 9px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            
+            chart.data.datasets.forEach((dataset, datasetIndex) => {
+              const meta = chart.getDatasetMeta(datasetIndex);
+              meta.data.forEach((element, index) => {
+                const dataValue = dataset.data[index];
+                if (dataValue > 0) {
+                  let text = '';
+                  if (dataValue >= 1000000) {
+                    text = 'Rp ' + (dataValue / 1000000).toFixed(1) + 'M';
+                  } else if (dataValue >= 1000) {
+                    text = 'Rp ' + (dataValue / 1000).toFixed(0) + 'k';
+                  } else {
+                    text = 'Rp ' + dataValue;
+                  }
+                  
+                  const x = element.x;
+                  const y = element.y - (chart.config.type === 'bar' ? 4 : 8);
+                  ctx.fillStyle = dataset.borderColor && dataset.borderColor !== 'transparent' 
+                    ? dataset.borderColor 
+                    : (datasetIndex === 0 ? '#d97706' : '#0284c7');
+                  
+                  ctx.fillText(text, x, y);
+                }
+              });
+            });
+            ctx.restore();
+          }
+        };
 
         chartInstance.current = new Chart(chartRef.current, {
           data: {
             labels: chartLabels,
-            datasets: [datasetConfig]
+            datasets: datasets
           },
-          plugins: chartType === 'line' ? [
-            {
-              id: 'customShadow',
-              beforeDatasetsDraw(chart, args, options) {
-                const { ctx } = chart;
-                ctx.save();
-                ctx.shadowColor = 'rgba(99, 102, 241, 0.3)';
-                ctx.shadowBlur = 10;
-                ctx.shadowOffsetY = 6;
-              },
-              afterDatasetsDraw(chart, args, options) {
-                const { ctx } = chart;
-                ctx.restore();
-              }
-            }
-          ] : [],
+          plugins: [customLabelsPlugin],
           options: {
             responsive: true,
             maintainAspectRatio: false,
@@ -6024,45 +6427,54 @@
             animations: {
               y: {
                 type: 'number',
-                easing: 'easeOutElastic',
-                duration: 2000,
+                easing: 'easeOutQuart',
+                duration: 1200,
                 from: (ctx) => {
-                  if (ctx.type === 'data') {
-                    return ctx.chart.scales.y.getPixelForValue(0);
-                  }
+                  if (ctx.type === 'data') return ctx.chart.scales.y.getPixelForValue(0);
                 },
                 delay: (ctx) => {
-                  if (ctx.type === 'data') {
-                    return ctx.index * 80; // staggered wave delay
-                  }
+                  if (ctx.type === 'data') return ctx.index * 50;
                 }
               },
               opacity: {
                 easing: 'easeInOutQuad',
-                duration: 1000,
+                duration: 800,
                 from: 0,
                 to: 1,
                 delay: (ctx) => {
-                  if (ctx.type === 'data') {
-                    return ctx.index * 40;
-                  }
+                  if (ctx.type === 'data') return ctx.index * 30;
                 }
               }
             },
             plugins: {
-              legend: { display: false },
+              legend: {
+                display: true,
+                position: 'top',
+                align: 'end',
+                labels: {
+                  boxWidth: 8,
+                  boxHeight: 8,
+                  usePointStyle: true,
+                  pointStyle: 'circle',
+                  font: { family: 'Inter', size: 10, weight: 'bold' },
+                  color: '#64748b'
+                }
+              },
               tooltip: {
-                backgroundColor: 'rgba(15, 23, 42, 0.95)', // Slate-900 with nice opacity
+                backgroundColor: 'rgba(15, 23, 42, 0.95)',
                 titleFont: { size: 12, weight: 'bold', family: 'Inter' },
                 bodyFont: { size: 11, family: 'Inter' },
                 padding: 12,
                 cornerRadius: 12,
-                displayColors: false,
-                borderWidth: 1,
+                displayColors: true,
+                boxWidth: 8,
+                boxHeight: 8,
+                usePointStyle: true,
                 borderColor: 'rgba(255, 255, 255, 0.1)',
+                borderWidth: 1,
                 callbacks: {
                   label: function(context) {
-                    return ' Pendapatan: Rp ' + context.raw.toLocaleString('id-ID');
+                    return ' ' + context.dataset.label + ': Rp ' + context.raw.toLocaleString('id-ID');
                   }
                 }
               }
@@ -6070,25 +6482,27 @@
             scales: {
               y: {
                 beginAtZero: true,
-                grid: { color: 'rgba(0, 0, 0, 0.04)', drawBorder: false },
+                grid: { color: 'rgba(0, 0, 0, 0.03)', drawBorder: false },
                 ticks: {
                   callback: function(value) {
-                    return 'Rp ' + value.toLocaleString('id-ID');
+                    if (value >= 1000000) return 'Rp ' + (value / 1000000).toFixed(1) + ' jt';
+                    if (value >= 1000) return 'Rp ' + (value / 1000).toFixed(0) + 'k';
+                    return 'Rp ' + value;
                   },
-                  font: { family: 'Inter', size: 10 },
-                  color: '#64748b'
+                  font: { family: 'Inter', size: 9 },
+                  color: '#94a3b8'
                 }
               },
               x: {
                 grid: { display: false },
-                ticks: { font: { family: 'Inter', size: 10 }, color: '#64748b' }
+                ticks: { font: { family: 'Inter', size: 9 }, color: '#94a3b8' }
               }
             }
           }
         });
 
         return () => { if (chartInstance.current) chartInstance.current.destroy(); };
-      }, [chartLabels, chartData, chartType]);
+      }, [chartLabels, chartDataSales, chartDataProfit, chartType]);
 
       return (
         <div className="pb-16 md:pb-0">
@@ -13025,7 +13439,7 @@
           <div className="h-16 flex items-center px-6 border-b border-zinc-800 justify-between md:justify-start">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center overflow-hidden border border-zinc-700">
-                <img src="./logo.jpg" alt="Logo" className="w-full h-full object-cover" />
+                <img src="./logo_smile.jpg" alt="Logo" className="w-full h-full object-cover" />
               </div>
               <span className="font-bold text-lg tracking-wide">SMILE POS</span>
             </div>
