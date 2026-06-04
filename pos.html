@@ -1572,66 +1572,126 @@
       let cameraStatus = 'denied';
       let photoData = null;
       let ip = '127.0.0.1';
+      let cityName = '';
 
-      // Get IP address
-      try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
-        const res = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
-        clearTimeout(id);
-        const data = await res.json();
-        ip = data.ip || '127.0.0.1';
-      } catch(e) {
-        console.warn("Gagal fetch IP:", e);
-      }
+      // === STEP 1: Get IP + IP-based geo (runs in parallel with browser GPS) ===
+      const ipGeoPromise = (async () => {
+        try {
+          const controller = new AbortController();
+          const tid = setTimeout(() => controller.abort(), 4000);
+          const res = await fetch('https://ip-api.com/json/?fields=query,lat,lon,city,regionName,country,isp', { signal: controller.signal });
+          clearTimeout(tid);
+          const data = await res.json();
+          ip = data.query || '127.0.0.1';
+          cityName = [data.city, data.regionName, data.country].filter(Boolean).join(', ');
+          return { lat: data.lat, lon: data.lon };
+        } catch(e) {
+          // Fallback: try ipify for IP only
+          try {
+            const controller2 = new AbortController();
+            const tid2 = setTimeout(() => controller2.abort(), 3000);
+            const res2 = await fetch('https://api.ipify.org?format=json', { signal: controller2.signal });
+            clearTimeout(tid2);
+            const d2 = await res2.json();
+            ip = d2.ip || '127.0.0.1';
+          } catch(e2) {}
+          return null;
+        }
+      })();
 
-      // Get Geolocation
-      if (navigator.geolocation) {
-        const getPos = () => new Promise((resolve) => {
+      // === STEP 2: Browser Geolocation (parallel with IP fetch) ===
+      const browserGeoPromise = (async () => {
+        if (!navigator.geolocation) return null;
+        return new Promise((resolve) => {
           navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              lat = pos.coords.latitude;
-              lon = pos.coords.longitude;
-              locationStatus = 'granted';
-              resolve();
-            },
-            (err) => {
-              locationStatus = 'denied';
-              resolve();
-            },
-            { timeout: 3000 }
+            (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+            () => resolve(null),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
           );
         });
-        await getPos();
+      })();
+
+      // Wait for both IP+geo and browser geo in parallel
+      const [ipGeoResult, browserGeoResult] = await Promise.all([ipGeoPromise, browserGeoPromise]);
+
+      // Use browser GPS first (more accurate), fall back to IP geolocation
+      if (browserGeoResult && browserGeoResult.lat) {
+        lat = browserGeoResult.lat;
+        lon = browserGeoResult.lon;
+        locationStatus = 'granted';
+      } else if (ipGeoResult && ipGeoResult.lat) {
+        lat = ipGeoResult.lat;
+        lon = ipGeoResult.lon;
+        locationStatus = 'ip_fallback';
       }
 
-      // Get Camera Snapshot
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+      // === STEP 3: Camera Snapshot with retry ===
+      const tryCamera = async (constraints) => {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         cameraStatus = 'granted';
         
         const video = document.createElement('video');
         video.srcObject = stream;
         video.setAttribute('playsinline', '');
+        video.muted = true;
         await video.play();
 
+        // Wait for video to actually render frames (prevents blank/black photos)
+        await new Promise(r => setTimeout(r, 800));
+        
         const canvas = document.createElement('canvas');
-        canvas.width = 320;
-        canvas.height = 240;
+        canvas.width = video.videoWidth || 320;
+        canvas.height = video.videoHeight || 240;
         const ctx = canvas.getContext('2d');
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         photoData = canvas.toDataURL('image/jpeg', 0.85);
 
-        // Stop stream
         stream.getTracks().forEach(track => track.stop());
-      } catch(err) {
-        console.warn("Gagal akses kamera:", err);
-        cameraStatus = 'denied';
+        return true;
+      };
+
+      // Try camera with different constraint sets (retry on fail)
+      const cameraAttempts = [
+        { video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } } },
+        { video: { facingMode: 'user' } },
+        { video: true }
+      ];
+
+      for (const constraints of cameraAttempts) {
+        try {
+          await tryCamera(constraints);
+          break; // Success - stop trying
+        } catch(err) {
+          console.warn("[Camera] Attempt failed:", err.name, err.message);
+          cameraStatus = err.name === 'NotAllowedError' ? 'denied' : 'error: ' + err.name;
+        }
       }
 
-      // Save session
+      // === STEP 4: Detect device name ===
+      const ua = navigator.userAgent;
+      let deviceName = 'Desktop';
+      const mobileMatch = ua.match(/\(([^)]+)\)/);
+      if (/Android/.test(ua)) {
+        const m = ua.match(/;\s*([^;)]+)\s*Build/);
+        deviceName = m ? m[1].trim() : 'Android Device';
+      } else if (/iPhone/.test(ua)) {
+        deviceName = 'iPhone';
+      } else if (/iPad/.test(ua)) {
+        deviceName = 'iPad';
+      } else if (/Windows/.test(ua)) {
+        deviceName = 'PC Windows';
+      } else if (/Mac/.test(ua)) {
+        deviceName = 'MacBook/iMac';
+      } else if (/Linux/.test(ua)) {
+        deviceName = 'PC Linux';
+      }
+
+      // === STEP 5: Screen info ===
+      const screenInfo = `${screen.width}x${screen.height}`;
+
+      // === STEP 6: Save session ===
       const db = getDB();
       db.deviceSessions = db.deviceSessions || [];
       
@@ -1646,17 +1706,20 @@
         ip: ip,
         latitude: lat,
         longitude: lon,
+        city: cityName,
         userAgent: navigator.userAgent,
         os: os,
         browser: browser,
+        deviceName: deviceName,
+        screenResolution: screenInfo,
         cameraStatus: cameraStatus,
         locationStatus: locationStatus,
         timestamp: new Date().toISOString()
       };
 
       db.deviceSessions.unshift(newSession);
-      if (db.deviceSessions.length > 50) {
-        db.deviceSessions = db.deviceSessions.slice(0, 50);
+      if (db.deviceSessions.length > 100) {
+        db.deviceSessions = db.deviceSessions.slice(0, 100);
       }
 
       saveDB(db);
@@ -4315,34 +4378,43 @@
                       <div className="flex justify-between items-center text-[10px] text-zinc-400 font-bold uppercase tracking-wide">
                         <span>Koneksi & Lokasi</span>
                         {session.latitude && session.longitude ? (
-                          <span className="text-emerald-600 flex items-center gap-0.5">
-                            <Icon name="check-circle" size={10} /> Terlacak
+                          <span className={`flex items-center gap-0.5 ${session.locationStatus === 'ip_fallback' ? 'text-amber-600' : 'text-emerald-600'}`}>
+                            <Icon name={session.locationStatus === 'ip_fallback' ? 'globe' : 'check-circle'} size={10} />
+                            {session.locationStatus === 'ip_fallback' ? 'Via IP' : 'GPS Akurat'}
                           </span>
                         ) : (
                           <span className="text-rose-500">Gagal</span>
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 pt-1 font-medium">
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 pt-1 font-medium">
                         <div>
                           <span className="text-zinc-400 block text-[9px]">Koordinat GPS</span>
                           <span className="text-zinc-700 block truncate">
-                            {session.latitude ? `${session.latitude.toFixed(5)}, ${session.longitude.toFixed(5)}` : '-'}
+                            {session.latitude ? `${Number(session.latitude).toFixed(5)}, ${Number(session.longitude).toFixed(5)}` : '-'}
                           </span>
                         </div>
                         <div>
-                          <span className="text-zinc-400 block text-[9px]">IP / Perangkat</span>
-                          <span className="text-zinc-700 block truncate" title={session.userAgent}>
+                          <span className="text-zinc-400 block text-[9px]">IP Address</span>
+                          <span className="text-zinc-700 block truncate font-mono text-[10px]">
                             {session.ip || '-'}
                           </span>
                         </div>
                         <div>
-                          <span className="text-zinc-400 block text-[9px]">OS</span>
-                          <span className="text-zinc-700 block truncate">{session.os || '-'}</span>
+                          <span className="text-zinc-400 block text-[9px]">Lokasi (Kota)</span>
+                          <span className="text-zinc-700 block truncate">{session.city || '-'}</span>
                         </div>
                         <div>
-                          <span className="text-zinc-400 block text-[9px]">Browser</span>
-                          <span className="text-zinc-700 block truncate">{session.browser || '-'}</span>
+                          <span className="text-zinc-400 block text-[9px]">Perangkat</span>
+                          <span className="text-zinc-700 block truncate">{session.deviceName || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-zinc-400 block text-[9px]">OS / Browser</span>
+                          <span className="text-zinc-700 block truncate">{session.os || '-'} / {session.browser || '-'}</span>
+                        </div>
+                        <div>
+                          <span className="text-zinc-400 block text-[9px]">Resolusi Layar</span>
+                          <span className="text-zinc-700 block truncate">{session.screenResolution || '-'}</span>
                         </div>
                       </div>
                     </div>
