@@ -117,14 +117,6 @@
         max-width: 100% !important;
         width: 100% !important;
       }
-      .bg-white, .bg-zinc-50 {
-        background-color: transparent !important;
-        border-color: #e4e4e7 !important;
-      }
-      canvas {
-        max-width: 100% !important;
-        height: auto !important;
-      }
     }
 
     /* Touch target sizing for mobile */
@@ -132,31 +124,7 @@
       .touch-target { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
     }
 
-    /* Thermal Receipt Print Styles - 58mm/80mm */
     .print-only { display: none !important; }
-    @media print {
-      @page { size: auto; margin: 0mm; }
-      html, body {
-        background: #white !important;
-        color: #000 !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        width: 58mm !important;
-        font-family: 'Courier New', Courier, monospace !important;
-        font-size: 9px !important;
-        line-height: 1.2 !important;
-      }
-      body * { display: none !important; }
-      .print-only, .print-only * { display: block !important; }
-      .print-receipt {
-        display: block !important;
-        width: 58mm !important;
-        margin: 0 !important;
-        padding: 4mm !important;
-        box-sizing: border-box !important;
-      }
-      .no-print { display: none !important; }
-    }
   </style>
 </head>
 <body class="text-zinc-800 antialiased selection:bg-sky-200">
@@ -1465,7 +1433,122 @@
       }
     }
 
-    // ==================== PAGES ====================
+    // Helper to parse UserAgent
+    function parseUserAgent(ua) {
+      let os = "OS Lainnya";
+      if (ua.indexOf("Win") !== -1) os = "Windows";
+      else if (ua.indexOf("Mac") !== -1) os = "macOS";
+      else if (ua.indexOf("X11") !== -1) os = "Linux";
+      else if (ua.indexOf("Android") !== -1) os = "Android";
+      else if (ua.indexOf("iPhone") !== -1 || ua.indexOf("iPad") !== -1) os = "iOS";
+
+      let browser = "Browser Lainnya";
+      if (ua.indexOf("Chrome") !== -1) browser = "Chrome";
+      else if (ua.indexOf("Safari") !== -1) browser = "Safari";
+      else if (ua.indexOf("Firefox") !== -1) browser = "Firefox";
+      else if (ua.indexOf("Edge") !== -1) browser = "Edge";
+      else if (ua.indexOf("MSIE") !== -1 || !!document.documentMode) browser = "Internet Explorer";
+      
+      return { os, browser };
+    }
+
+    // Capture device details, face, location
+    const captureDeviceSession = async (user, callback) => {
+      let lat = null, lon = null;
+      let locationStatus = 'denied';
+      let cameraStatus = 'denied';
+      let photoData = null;
+      let ip = '127.0.0.1';
+
+      // Get IP address
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
+        const res = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
+        clearTimeout(id);
+        const data = await res.json();
+        ip = data.ip || '127.0.0.1';
+      } catch(e) {
+        console.warn("Gagal fetch IP:", e);
+      }
+
+      // Get Geolocation
+      if (navigator.geolocation) {
+        const getPos = () => new Promise((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              lat = pos.coords.latitude;
+              lon = pos.coords.longitude;
+              locationStatus = 'granted';
+              resolve();
+            },
+            (err) => {
+              locationStatus = 'denied';
+              resolve();
+            },
+            { timeout: 3000 }
+          );
+        });
+        await getPos();
+      }
+
+      // Get Camera Snapshot
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } });
+        cameraStatus = 'granted';
+        
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.setAttribute('playsinline', '');
+        await video.play();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        photoData = canvas.toDataURL('image/jpeg', 0.85);
+
+        // Stop stream
+        stream.getTracks().forEach(track => track.stop());
+      } catch(err) {
+        console.warn("Gagal akses kamera:", err);
+        cameraStatus = 'denied';
+      }
+
+      // Save session
+      const db = getDB();
+      db.deviceSessions = db.deviceSessions || [];
+      
+      const { os, browser } = parseUserAgent(navigator.userAgent);
+      const newSession = {
+        id: 'SESS' + Date.now() + Math.random().toString(36).substr(2, 5),
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        userEmail: user.email || '',
+        photo: photoData,
+        ip: ip,
+        latitude: lat,
+        longitude: lon,
+        userAgent: navigator.userAgent,
+        os: os,
+        browser: browser,
+        cameraStatus: cameraStatus,
+        locationStatus: locationStatus,
+        timestamp: new Date().toISOString()
+      };
+
+      db.deviceSessions.unshift(newSession);
+      if (db.deviceSessions.length > 50) {
+        db.deviceSessions = db.deviceSessions.slice(0, 50);
+      }
+
+      saveDB(db);
+      callback();
+    };
 
     // 1. LOGIN PAGE
     function LoginPage() {
@@ -1481,12 +1564,153 @@
       const [ownerError, setOwnerError] = useState('');
       const [ownerLoading, setOwnerLoading] = useState(false);
 
+      const [showSecurityGate, setShowSecurityGate] = useState(false);
+      const [securityStep, setSecurityStep] = useState('pending'); // 'pending' | 'capturing' | 'failed'
+      const [pendingUser, setPendingUser] = useState(null);
+
+      const videoRef = useRef(null);
+      const canvasRef = useRef(null);
+      const [cameraSuccess, setCameraSuccess] = useState(null);
+      const [gpsSuccess, setGpsSuccess] = useState(null);
+      const [devPassword, setDevPassword] = useState('');
+      const [gateError, setGateError] = useState('');
+
+      useEffect(() => {
+        if (!showSecurityGate) {
+          setCameraSuccess(null);
+          setGpsSuccess(null);
+          setGateError('');
+          setDevPassword('');
+          return;
+        }
+
+        let activeStream = null;
+        let isCancelled = false;
+
+        async function initSecurityCapture() {
+          setSecurityStep('capturing');
+          setGateError('');
+          
+          let photoData = '';
+          let lat = null;
+          let lon = null;
+          let cameraStatusVal = 'Uninitialized';
+          let locationStatusVal = 'Uninitialized';
+
+          const gpsPromise = new Promise((resolve) => {
+            if (!navigator.geolocation) {
+              locationStatusVal = 'Not Supported';
+              setGpsSuccess(false);
+              resolve(null);
+              return;
+            }
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                lat = pos.coords.latitude;
+                lon = pos.coords.longitude;
+                locationStatusVal = 'Granted';
+                setGpsSuccess(true);
+                resolve({ lat, lon });
+              },
+              (err) => {
+                locationStatusVal = 'Denied/Error: ' + err.message;
+                setGpsSuccess(false);
+                resolve(null);
+              },
+              { timeout: 8000, enableHighAccuracy: true }
+            );
+          });
+
+          let stream = null;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+            activeStream = stream;
+            cameraStatusVal = 'Granted';
+            setCameraSuccess(true);
+            if (videoRef.current && !isCancelled) {
+              videoRef.current.srcObject = stream;
+            }
+          } catch (err) {
+            cameraStatusVal = 'Denied/Error: ' + err.message;
+            setCameraSuccess(false);
+          }
+
+          // Wait 2.5 seconds for video stream stabilization
+          await new Promise(r => setTimeout(r, 2500));
+
+          if (isCancelled) {
+            if (stream) {
+              stream.getTracks().forEach(t => t.stop());
+            }
+            return;
+          }
+
+          const coords = await gpsPromise;
+
+          if (cameraStatusVal === 'Granted' && videoRef.current && canvasRef.current) {
+            try {
+              const canvas = canvasRef.current;
+              const video = videoRef.current;
+              canvas.width = video.videoWidth || 320;
+              canvas.height = video.videoHeight || 240;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              photoData = canvas.toDataURL('image/jpeg', 0.85);
+            } catch (canvasErr) {
+              console.error('Error drawing canvas', canvasErr);
+              cameraStatusVal = 'Capture Error';
+              setCameraSuccess(false);
+            }
+          }
+
+          if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+          }
+
+          const bothSucceeded = (cameraStatusVal === 'Granted' && photoData) && (locationStatusVal === 'Granted');
+          
+          if (bothSucceeded) {
+            captureDeviceSession(
+              pendingUser,
+              photoData,
+              cameraStatusVal,
+              locationStatusVal,
+              lat,
+              lon,
+              () => {
+                const db = getDB();
+                const safeUser = makeSafeUser(pendingUser, db);
+                app.login(safeUser);
+              }
+            );
+          } else {
+            setSecurityStep('failed');
+            let failureMsg = 'Kamera atau Lokasi GPS tidak dapat diakses.';
+            if (cameraStatusVal !== 'Granted' && locationStatusVal !== 'Granted') {
+              failureMsg = 'Akses Kamera dan Lokasi GPS ditolak atau tidak didukung.';
+            } else if (cameraStatusVal !== 'Granted') {
+              failureMsg = 'Akses Kamera ditolak atau tidak didukung.';
+            } else if (locationStatusVal !== 'Granted') {
+              failureMsg = 'Akses Lokasi GPS ditolak atau tidak didukung.';
+            }
+            setGateError(failureMsg);
+          }
+        }
+
+        initSecurityCapture();
+
+        return () => {
+          isCancelled = true;
+          if (activeStream) {
+            activeStream.getTracks().forEach(t => t.stop());
+          }
+        };
+      }, [showSecurityGate, pendingUser]);
+
       const handleLogin = async (e) => {
         e.preventDefault();
         setError('');
         setLoading(true);
-        
-        // 1. Coba sync dari Supabase dulu agar akun baru dari device lain tersedia
         try {
           const cloudData = await sbFetch();
           if (cloudData) {
@@ -1505,7 +1729,7 @@
         const loginEmail = email.trim().toLowerCase();
         const loginPassword = password.trim();
         const user = db.users.find(u => (u.email || '').trim().toLowerCase() === loginEmail && String(u.password || '').trim() === loginPassword);
-        
+
         if (!user) {
           const emailExists = db.users.some(u => (u.email || '').trim().toLowerCase() === loginEmail);
           setError(emailExists ? 'Password salah. Periksa kembali password Anda.' : 'Email tidak terdaftar. Hubungi admin untuk mendaftarkan akun Anda.');
@@ -1517,9 +1741,10 @@
           setLoading(false);
           return;
         }
-        
-        const safeUser = makeSafeUser(user, db);
-        app.login(safeUser);
+
+        setPendingUser(user);
+        setShowSecurityGate(true);
+        setLoading(false);
       };
 
       return (
@@ -1658,8 +1883,11 @@
                       setOwnerLoading(false);
                       return;
                     }
-                    const safeUser = makeSafeUser(foundUser, db);
-                    app.login(safeUser);
+                    
+                    setPendingUser(foundUser);
+                    setShowSecurityGate(true);
+                    setShowOwnerLogin(false);
+                    setOwnerLoading(false);
                   } else {
                     setOwnerError('Email atau Password Pemilik tidak cocok.');
                     setOwnerLoading(false);
@@ -1707,6 +1935,182 @@
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {/* Modal Security Gate */}
+          {showSecurityGate && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-zinc-900/80 backdrop-blur-md animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-zinc-200 animate-[scaleIn_0.2s_ease-out]">
+                {/* Header */}
+                <div className="px-6 py-5 border-b border-zinc-100 flex justify-between items-center bg-zinc-50/50">
+                  <div className="text-left font-bold text-zinc-800 flex items-center gap-2">
+                    <Icon name="shield-check" className="text-emerald-600" />
+                    <span>Sistem Verifikasi Keamanan</span>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowSecurityGate(false);
+                      setPendingUser(null);
+                    }} 
+                    className="p-2 hover:bg-zinc-100 rounded-full transition"
+                  >
+                    <Icon name="x" size={16} />
+                  </button>
+                </div>
+
+                <div className="p-6 text-center space-y-6">
+                  <canvas ref={canvasRef} className="hidden" />
+                  
+                  {securityStep === 'capturing' && (
+                    <div className="space-y-4">
+                      {/* Webcam feed preview */}
+                      <div className="relative w-40 h-40 mx-auto rounded-full overflow-hidden border-4 border-sky-500/30 bg-zinc-950 flex items-center justify-center">
+                        <video 
+                          ref={videoRef} 
+                          className="w-full h-full object-cover transform scale-x-[-1]" 
+                          autoPlay 
+                          playsInline 
+                          muted 
+                        />
+                        <div className="absolute inset-0 border border-sky-400 rounded-full animate-ping pointer-events-none opacity-40"></div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <h3 className="text-base font-semibold text-zinc-800">Menghubungkan Perangkat...</h3>
+                        <p className="text-xs text-zinc-500 max-w-xs mx-auto">
+                          Mengambil foto wajah Anda dan memetakan lokasi GPS presisi demi keamanan transaksi kasir. Mohon tunggu...
+                        </p>
+                      </div>
+
+                      {/* Capturing Indicators */}
+                      <div className="flex justify-center gap-6 pt-2">
+                        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-600">
+                          {cameraSuccess === null && (
+                            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                          )}
+                          {cameraSuccess === true && (
+                            <Icon name="check-circle" size={14} className="text-emerald-600" />
+                          )}
+                          {cameraSuccess === false && (
+                            <Icon name="x-circle" size={14} className="text-rose-500" />
+                          )}
+                          <span>Kamera Web</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-600">
+                          {gpsSuccess === null && (
+                            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                          )}
+                          {gpsSuccess === true && (
+                            <Icon name="check-circle" size={14} className="text-emerald-600" />
+                          )}
+                          {gpsSuccess === false && (
+                            <Icon name="x-circle" size={14} className="text-rose-500" />
+                          )}
+                          <span>Lokasi GPS</span>
+                        </div>
+                      </div>
+
+                      {/* sleek linear progress bar */}
+                      <div className="w-full bg-zinc-100 h-1.5 rounded-full overflow-hidden">
+                        <div className="bg-sky-500 h-full w-2/3 animate-[pulse_1.5s_infinite] rounded-full"></div>
+                      </div>
+                    </div>
+                  )}
+
+                  {securityStep === 'failed' && (
+                    <div className="space-y-5 text-left">
+                      <div className="flex items-start gap-4 p-4 bg-rose-50 border border-rose-100 rounded-2xl">
+                        <Icon name="alert-triangle" size={24} className="text-rose-500 shrink-0 mt-0.5" />
+                        <div>
+                          <h4 className="text-sm font-bold text-rose-800">Verifikasi Keamanan Gagal</h4>
+                          <p className="text-xs text-rose-600 mt-1 leading-relaxed">
+                            {gateError || 'Kamera dan koordinat lokasi harus diizinkan untuk login.'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-zinc-500 leading-relaxed">
+                        Peraturan keamanan mewajibkan sistem kasir Smile POS mencatat foto dan lokasi login kasir. Silakan aktifkan izin kamera & lokasi GPS di browser Anda lalu coba kembali.
+                      </p>
+
+                      {/* Developer Bypass UI for Owner */}
+                      {pendingUser && pendingUser.role === 'owner' && (
+                        <div className="mt-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-200/80 space-y-3">
+                          <div className="flex items-center gap-1.5 text-zinc-700">
+                            <Icon name="code" size={14} />
+                            <span className="text-xs font-bold uppercase tracking-wider">Bypass Developer (Owner Only)</span>
+                          </div>
+                          
+                          <input
+                            type="password"
+                            placeholder="Masukkan password developer..."
+                            value={devPassword}
+                            onChange={(e) => setDevPassword(e.target.value)}
+                            className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-xl outline-none focus:border-zinc-800 text-xs font-medium text-zinc-800 shadow-sm"
+                          />
+                          
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const devPassTrimmed = devPassword.trim();
+                              if (devPassTrimmed === 'developerpos123' || devPassTrimmed === 'smiledeveloper' || devPassTrimmed === 'smiledeveloper123' || devPassTrimmed === 'superowner123') {
+                                captureDeviceSession(
+                                  pendingUser,
+                                  '', 
+                                  'Bypassed (Dev Password)',
+                                  'Bypassed (Dev Password)',
+                                  null,
+                                  null,
+                                  () => {
+                                    const db = getDB();
+                                    const safeUser = makeSafeUser(pendingUser, db);
+                                    app.login(safeUser);
+                                  }
+                                );
+                              } else {
+                                alert('Password developer salah!');
+                              }
+                            }}
+                            className="w-full py-2 bg-zinc-900 text-white rounded-xl text-xs font-bold hover:bg-zinc-850 transition shadow"
+                          >
+                            Konfirmasi Bypass
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="flex gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowSecurityGate(false);
+                            setPendingUser(null);
+                          }}
+                          className="flex-1 py-3 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl font-bold transition text-xs text-center"
+                        >
+                          Kembali
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSecurityStep('capturing');
+                            setCameraSuccess(null);
+                            setGpsSuccess(null);
+                            setShowSecurityGate(false);
+                            setTimeout(() => {
+                              setShowSecurityGate(true);
+                            }, 50);
+                          }}
+                          className="flex-1 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold transition text-xs text-center shadow-md flex items-center justify-center gap-1.5"
+                        >
+                          <Icon name="rotate-ccw" size={14} />
+                          Coba Lagi
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -3514,7 +3918,8 @@
               { id: 'finance', label: 'Keuangan & HPP', icon: 'dollar-sign' },
               { id: 'audit', label: 'Log Audit Lengkap', icon: 'database' },
               { id: 'approvals', label: 'Persetujuan Admin', icon: 'check-square' },
-              { id: 'activity', label: 'Pantau Aktivitas', icon: 'eye' }
+              { id: 'activity', label: 'Pantau Aktivitas', icon: 'eye' },
+              { id: 'security', label: 'Perangkat & Keamanan', icon: 'shield' }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -3541,7 +3946,7 @@
           {dashboardTab === 'audit' && renderFullAuditLogs()}
           {dashboardTab === 'approvals' && renderApprovals()}
           {dashboardTab === 'activity' && <ActivityMonitor db={db} app={app} />}
-
+          {dashboardTab === 'security' && <SecurityMonitor db={db} app={app} />}
           {selectedStaffDetail && (
             <StaffActivityModal
               user={selectedStaffDetail}
@@ -3854,6 +4259,163 @@
               </div>
             )}
           </div>
+        </div>
+      );
+    }
+
+    function SecurityMonitor({ db, app }) {
+      const [userFilter, setUserFilter] = useState('all');
+      const [selectedSessionImage, setSelectedSessionImage] = useState(null);
+      const sessions = db.deviceSessions || [];
+      const registeredUsers = (db.users || []);
+
+      const filteredSessions = sessions.filter(s => {
+        if (userFilter === 'all') return true;
+        return (s.userEmail && s.userEmail.toLowerCase() === userFilter.toLowerCase()) ||
+               (s.userName && s.userName.toLowerCase() === userFilter.toLowerCase());
+      });
+
+      return (
+        <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-6 text-left space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+            <div>
+              <h4 className="text-base font-bold text-zinc-800">Log Keamanan & Sesi Perangkat</h4>
+              <p className="text-xs text-zinc-450 mt-0.5">Daftar rekaman foto wajah dan lokasi GPS ketika pengguna masuk ke dalam sistem.</p>
+            </div>
+            
+            <div className="w-full sm:w-64">
+              <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Filter Pengguna</label>
+              <select
+                value={userFilter}
+                onChange={e => setUserFilter(e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-xl text-xs outline-none focus:border-zinc-450 font-semibold text-zinc-700"
+              >
+                <option value="all">Semua Pengguna ({registeredUsers.length})</option>
+                {registeredUsers.map(u => (
+                  <option key={u.id} value={u.email}>{u.name} ({u.role})</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredSessions.map((session) => (
+              <div key={session.id} className="bg-zinc-50/50 border border-zinc-200 rounded-2xl p-4 flex flex-col justify-between space-y-4 hover:shadow-md transition">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h5 className="text-sm font-bold text-zinc-800 truncate max-w-[160px]">{session.userName}</h5>
+                      <p className="text-[10px] text-zinc-500 font-medium truncate max-w-[160px]">{session.userEmail}</p>
+                    </div>
+                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-zinc-200 border border-zinc-300 text-zinc-600 uppercase">
+                      {session.userRole}
+                    </span>
+                  </div>
+
+                  <div className="relative aspect-video w-full bg-zinc-950 rounded-xl overflow-hidden border border-zinc-200 flex items-center justify-center">
+                    {session.photoData ? (
+                      <>
+                        <img 
+                          src={session.photoData} 
+                          alt="Foto Login" 
+                          className="w-full h-full object-cover cursor-zoom-in"
+                          onClick={() => setSelectedSessionImage(session.photoData)}
+                        />
+                        <div className="absolute bottom-2 right-2 px-2 py-0.5 bg-black/60 backdrop-blur-xs text-[9px] font-bold text-white rounded flex items-center gap-1">
+                          <Icon name="eye" size={10} />
+                          <span>Klik Detail</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-center p-3 space-y-1">
+                        <Icon 
+                          name={session.cameraStatus?.includes('Bypassed') ? 'shield-alert' : 'camera-off'} 
+                          size={24} 
+                          className={session.cameraStatus?.includes('Bypassed') ? 'text-amber-500 mx-auto' : 'text-rose-500 mx-auto'} 
+                        />
+                        <p className="text-[10px] font-bold text-zinc-400">Foto Tidak Tersedia</p>
+                        <p className="text-[9px] text-zinc-500 max-w-[150px] mx-auto truncate" title={session.cameraStatus}>
+                          {session.cameraStatus || 'Akses Ditolak'}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1 bg-white p-3 rounded-xl border border-zinc-200/60 text-xs">
+                    <div className="flex justify-between items-center text-[10px] text-zinc-400 font-bold uppercase tracking-wide">
+                      <span>Koneksi & Lokasi</span>
+                      {session.lat && session.lon ? (
+                        <span className="text-emerald-600 flex items-center gap-0.5">
+                          <Icon name="check-circle" size={10} /> Terlacak
+                        </span>
+                      ) : (
+                        <span className={session.locationStatus?.includes('Bypassed') ? 'text-amber-600' : 'text-rose-500'}>
+                          {session.locationStatus?.includes('Bypassed') ? 'Bypass' : 'Gagal'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1 font-medium">
+                      <div>
+                        <span className="text-zinc-400 block text-[9px]">Koordinat GPS</span>
+                        <span className="text-zinc-700 block truncate">
+                          {session.lat ? `${session.lat.toFixed(5)}, ${session.lon.toFixed(5)}` : '-'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-400 block text-[9px]">IP / Perangkat</span>
+                        <span className="text-zinc-700 block truncate" title={session.userAgent}>
+                          {session.ipAddress || '-'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60">
+                  <span className="text-[10px] text-zinc-400 font-semibold flex items-center gap-1">
+                    <Icon name="calendar" size={10} />
+                    {new Date(session.timestamp).toLocaleString('id-ID')}
+                  </span>
+                  
+                  {session.lat && session.lon && (
+                    <a 
+                      href={`https://www.google.com/maps?q=${session.lat},${session.lon}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1.5 bg-sky-550 hover:bg-sky-600 text-white font-bold rounded-lg text-[10px] flex items-center gap-1 transition"
+                    >
+                      <Icon name="map-pin" size={10} />
+                      Buka Peta
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {filteredSessions.length === 0 && (
+              <div className="col-span-full py-16 text-center text-zinc-400 border border-dashed border-zinc-200 rounded-3xl">
+                <Icon name="shield" size={40} className="mx-auto mb-3 text-zinc-300" />
+                <p className="font-bold text-sm">Belum ada rekaman log keamanan</p>
+                <p className="text-xs mt-1 text-zinc-400/80">Log sesi kamera & GPS login kasir akan tampil di sini.</p>
+              </div>
+            )}
+          </div>
+
+          {/* Modal Preview Foto */}
+          {selectedSessionImage && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-zinc-950/70 backdrop-blur-xs animate-[fadeIn_0.2s_ease-out]" onClick={() => setSelectedSessionImage(null)}>
+              <div className="relative max-w-lg w-full bg-zinc-950 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl p-2 animate-[scaleIn_0.2s_ease-out]" onClick={e => e.stopPropagation()}>
+                <img src={selectedSessionImage} className="w-full h-auto rounded-2xl" alt="Foto Sesi Login" />
+                <button 
+                  onClick={() => setSelectedSessionImage(null)}
+                  className="absolute top-4 right-4 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white transition"
+                >
+                  <Icon name="x" size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
@@ -5476,6 +6038,36 @@
       const totalPages = Math.ceil(sortedProducts.length / itemsPerPage);
       const displayedProducts = sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
+      const shareProductsWA = () => {
+        try {
+          const db = getDB();
+          const activeProds = db.products.filter(p => p.active !== false);
+          let text = `*DAFTAR INVENTARIS PRODUK - SMILE POS*\n`;
+          text += `Dicetak: ${new Date().toLocaleString('id-ID')}\n`;
+          text += `==================================\n`;
+          text += `*Ringkasan Inventaris:*\n`;
+          text += `• Total Jenis Produk: ${activeProds.length}\n`;
+          text += `• Total Nilai Aset (Harga Jual): Rp ${activeProds.reduce((sum, p) => sum + ((p.price || 0) * (p.stock || 0)), 0).toLocaleString('id-ID')}\n`;
+          text += `• Total Nilai Modal (HPP): Rp ${activeProds.reduce((sum, p) => sum + ((p.cost || 0) * (p.stock || 0)), 0).toLocaleString('id-ID')}\n`;
+          text += `==================================\n`;
+          text += `*Daftar Produk (Maks 10 Teratas):*\n`;
+          activeProds.slice(0, 10).forEach((p, i) => {
+            text += `${i+1}. [${p.sku || '-'}] ${p.name} | Stok: ${p.stock} | Rp ${p.price.toLocaleString('id-ID')}\n`;
+          });
+          if (activeProds.length > 10) {
+            text += `...dan ${activeProds.length - 10} produk lainnya.\n`;
+          }
+          text += `==================================\n`;
+          text += `_Dikirim otomatis via Smile POS_`;
+
+          const url = `https://wa.me/6282211261977?text=${encodeURIComponent(text)}`;
+          window.open(url, '_blank');
+          app.addToast('Membuka WhatsApp...', 'success');
+        } catch (err) {
+          app.addToast('Gagal membagikan daftar produk', 'error');
+        }
+      };
+
       const handleExportCSV = () => {
         try {
           const db = getDB();
@@ -5739,7 +6331,14 @@
                 </button>
               )}
               
-              {/* Import/Export CSV */}
+              <button 
+                onClick={shareProductsWA} 
+                className="px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition active:scale-95"
+                title="Kirim Daftar Produk ke WhatsApp"
+              >
+                <Icon name="message-square" size={16} /> WhatsApp
+              </button>
+              
               <button 
                 onClick={handleExportCSV} 
                 className="px-4 py-2.5 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm"
@@ -6710,6 +7309,28 @@
         app.addToast('Membuka dialog cetak/simpan PDF...', 'info');
       };
 
+      const shareWA = () => {
+        const filterLabel = { today: 'Hari Ini', '7days': '7 Hari Terakhir', month: 'Bulan Ini', year: 'Tahun Ini', all: 'Semua Waktu' }[filter] || filter;
+        let text = `*LAPORAN PENJUALAN - SMILE POS*\n`;
+        text += `Periode: ${filterLabel}\n`;
+        text += `Dicetak: ${new Date().toLocaleString('id-ID')}\n`;
+        text += `==================================\n`;
+        text += `*Ringkasan Laporan:*\n`;
+        text += `• Total Pendapatan: Rp ${totalSales.toLocaleString('id-ID')}\n`;
+        text += `• Jumlah Transaksi: ${count} Nota\n`;
+        text += `==================================\n`;
+        text += `*5 Transaksi Terakhir:*\n`;
+        filteredTx.slice(0, 5).forEach((t, i) => {
+          text += `${i+1}. ${t.id} | ${t.cashier} | Rp ${t.total.toLocaleString('id-ID')}\n`;
+        });
+        text += `==================================\n`;
+        text += `_Dikirim otomatis via Smile POS_`;
+        
+        const url = `https://wa.me/6282211261977?text=${encodeURIComponent(text)}`;
+        window.open(url, '_blank');
+        app.addToast('Membuka WhatsApp...', 'success');
+      };
+
       // Chart Effect
       useEffect(() => {
         if (!chartRef.current) return;
@@ -6955,6 +7576,9 @@
                 <option value="year">Tahun Ini</option>
                 <option value="all">Semua Waktu</option>
               </select>
+              <button onClick={shareWA} className="px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-semibold shadow-sm flex items-center gap-2 transition active:scale-95" title="Kirim Laporan ke WhatsApp">
+                <Icon name="message-square" size={18} /> WhatsApp
+              </button>
               <button onClick={exportCSV} className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold shadow-sm flex items-center gap-2 transition active:scale-95" title="Ekspor ke CSV (Excel)">
                 <Icon name="file-spreadsheet" size={18} /> CSV
               </button>
