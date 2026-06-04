@@ -793,6 +793,16 @@
       const [lastTransaction, setLastTransaction] = useState(null);
       const [showSuccessModal, setShowSuccessModal] = useState(false);
 
+      const addToast = (message, type = 'success') => {
+        const id = Date.now();
+        setToasts(prev => [...prev, { id, message, type }]);
+        setTimeout(() => {
+          setToasts(prev => prev.filter(t => t.id !== id));
+        }, 3000);
+      };
+
+      const refreshDB = () => setDbVersion(v => v + 1);
+
       useEffect(() => {
         const handleOnline = () => {
           setIsOnline(true);
@@ -932,16 +942,6 @@
         sessionStorage.removeItem('pos_user');
         sessionStorage.removeItem('pos_locked');
       };
-
-      const addToast = (message, type = 'success') => {
-        const id = Date.now();
-        setToasts(prev => [...prev, { id, message, type }]);
-        setTimeout(() => {
-          setToasts(prev => prev.filter(t => t.id !== id));
-        }, 3000);
-      };
-
-      const refreshDB = () => setDbVersion(v => v + 1);
 
       // Check shift and operational hours bypass
       useEffect(() => {
@@ -5034,7 +5034,8 @@
                     </form>
                   ) : (
                     /* REGULAR SINGLE PAYMENT METHOD FORM */
-                                          <div className="flex bg-zinc-100 p-1 rounded-xl">
+                    <div className="space-y-4">
+                      <div className="flex bg-zinc-100 p-1 rounded-xl">
                         <button onClick={() => setPayMethod('cash')} className={`flex-1 py-2.5 rounded-lg text-xs font-bold transition flex justify-center items-center gap-1.5 ${payMethod === 'cash' ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>
                           <Icon name="banknote" size={16} /> Tunai
                         </button>
