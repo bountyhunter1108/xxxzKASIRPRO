@@ -2470,6 +2470,11 @@
             const d = new Date(t.date);
             return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
           });
+        } else if (filter === 'year') {
+          txs = txs.filter(t => {
+            const d = new Date(t.date);
+            return d.getFullYear() === now.getFullYear();
+          });
         }
         return txs;
       }, [allTx, filter]);
@@ -2598,21 +2603,7 @@
       // Category Sales Memo
       const categorySales = useMemo(() => {
         const catMap = {};
-        const txs = db.transactions ? db.transactions.filter(t => !t.deleted) : [];
-        const now = new Date();
-        let filtered = txs;
-        if (filter === 'today') {
-          filtered = txs.filter(t => new Date(t.date).toDateString() === now.toDateString());
-        } else if (filter === '7days') {
-          const past = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          filtered = txs.filter(t => new Date(t.date) >= past);
-        } else if (filter === 'month') {
-          filtered = txs.filter(t => {
-            const d = new Date(t.date);
-            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-          });
-        }
-        filtered.forEach(t => {
+        filteredTx.forEach(t => {
           t.items.forEach(item => {
             const prod = db.products ? db.products.find(p => p.id === item.id) : null;
             const cat = prod && prod.category ? prod.category : 'Umum';
@@ -2620,58 +2611,30 @@
           });
         });
         return catMap;
-      }, [db.transactions, db.products, filter]);
+      }, [filteredTx, db.products]);
 
       // Payment Distribution Memo
       const paymentDistribution = useMemo(() => {
         const payMap = { cash: 0, qris: 0, transfer: 0, debt: 0 };
-        const txs = db.transactions ? db.transactions.filter(t => !t.deleted) : [];
-        const now = new Date();
-        let filtered = txs;
-        if (filter === 'today') {
-          filtered = txs.filter(t => new Date(t.date).toDateString() === now.toDateString());
-        } else if (filter === '7days') {
-          const past = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          filtered = txs.filter(t => new Date(t.date) >= past);
-        } else if (filter === 'month') {
-          filtered = txs.filter(t => {
-            const d = new Date(t.date);
-            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-          });
-        }
-        filtered.forEach(t => {
+        filteredTx.forEach(t => {
           const method = t.method || 'cash';
           payMap[method] = (payMap[method] || 0) + (t.total || 0);
         });
         return payMap;
-      }, [db.transactions, filter]);
+      }, [filteredTx]);
 
       // Radar Performance Metrics Memo
       const radarMetrics = useMemo(() => {
-        const txs = db.transactions ? db.transactions.filter(t => !t.deleted) : [];
-        const now = new Date();
-        let filtered = txs;
-        if (filter === 'today') {
-          filtered = txs.filter(t => new Date(t.date).toDateString() === now.toDateString());
-        } else if (filter === '7days') {
-          const past = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          filtered = txs.filter(t => new Date(t.date) >= past);
-        } else if (filter === 'month') {
-          filtered = txs.filter(t => {
-            const d = new Date(t.date);
-            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-          });
-        }
-        const totalRev = filtered.reduce((s, t) => s + (t.total || 0), 0);
-        const totalCost = filtered.reduce((s, t) => s + (t.cost || 0), 0);
+        const totalRev = filteredTx.reduce((s, t) => s + (t.total || 0), 0);
+        const totalCost = filteredTx.reduce((s, t) => s + (t.cost || 0), 0);
         const profitScore = totalRev > 0 ? Math.min(100, Math.max(0, ((totalRev - totalCost) / totalRev) * 100 * 2)) : 0;
-        const qrisCount = filtered.filter(t => t.method === 'qris').length;
-        const qrisRatio = filtered.length > 0 ? (qrisCount / filtered.length) * 100 : 0;
-        const memberCount = filtered.filter(t => t.memberId || t.memberName).length;
-        const memberRatio = filtered.length > 0 ? (memberCount / filtered.length) * 100 : 0;
+        const qrisCount = filteredTx.filter(t => t.method === 'qris').length;
+        const qrisRatio = filteredTx.length > 0 ? (qrisCount / filteredTx.length) * 100 : 0;
+        const memberCount = filteredTx.filter(t => t.memberId || t.memberName).length;
+        const memberRatio = filteredTx.length > 0 ? (memberCount / filteredTx.length) * 100 : 0;
         const totalActiveProducts = db.products ? db.products.filter(p => p.active !== false).length : 0;
         const uniqueSoldProducts = new Set();
-        filtered.forEach(t => t.items.forEach(i => uniqueSoldProducts.add(i.id)));
+        filteredTx.forEach(t => t.items.forEach(i => uniqueSoldProducts.add(i.id)));
         const turnoverRatio = totalActiveProducts > 0 ? (uniqueSoldProducts.size / totalActiveProducts) * 100 : 0;
         const shifts = db.shifts || [];
         const closedShifts = shifts.filter(s => s.status === 'closed');
@@ -2684,7 +2647,7 @@
           Math.round(Math.max(10, turnoverRatio)), 
           Math.round(Math.max(10, cashierScore))
         ];
-      }, [db.transactions, db.products, db.shifts, filter]);
+      }, [filteredTx, db.products, db.shifts]);
 
       // Render chart
       useEffect(() => {
@@ -2694,12 +2657,12 @@
         const ctx = chartRef.current.getContext('2d');
         
         const salesGradient = ctx.createLinearGradient(0, 0, 0, 240);
-        salesGradient.addColorStop(0, 'rgba(24, 24, 27, 0.08)');
-        salesGradient.addColorStop(1, 'rgba(24, 24, 27, 0.0)');
+        salesGradient.addColorStop(0, 'rgba(79, 70, 229, 0.12)'); // Indigo-600
+        salesGradient.addColorStop(1, 'rgba(79, 70, 229, 0.0)');
 
         const profitGradient = ctx.createLinearGradient(0, 0, 0, 240);
-        profitGradient.addColorStop(0, 'rgba(14, 165, 233, 0.06)');
-        profitGradient.addColorStop(1, 'rgba(14, 165, 233, 0.0)');
+        profitGradient.addColorStop(0, 'rgba(16, 185, 129, 0.12)'); // Emerald-500
+        profitGradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
 
         chartInstance.current = new Chart(chartRef.current, {
           type: 'line',
@@ -2709,34 +2672,34 @@
               {
                 label: 'Pendapatan',
                 data: chartDataSales,
-                borderColor: '#18181b',
+                borderColor: '#4f46e5', // Indigo-600
                 backgroundColor: salesGradient,
                 borderWidth: 3,
                 fill: true,
-                tension: 0.4,
+                tension: 0.35,
                 pointBackgroundColor: '#fff',
-                pointBorderColor: '#18181b',
+                pointBorderColor: '#4f46e5',
                 pointBorderWidth: 2.5,
-                pointRadius: 4,
+                pointRadius: 3,
                 pointHoverRadius: 6,
-                pointHoverBackgroundColor: '#18181b',
+                pointHoverBackgroundColor: '#4f46e5',
                 pointHoverBorderColor: '#fff',
                 pointHoverBorderWidth: 2.5
               },
               {
                 label: 'Laba Bersih',
                 data: chartDataProfit,
-                borderColor: '#0ea5e9',
+                borderColor: '#10b981', // Emerald-500
                 backgroundColor: profitGradient,
                 borderWidth: 3,
                 fill: true,
-                tension: 0.4,
+                tension: 0.35,
                 pointBackgroundColor: '#fff',
-                pointBorderColor: '#0ea5e9',
+                pointBorderColor: '#10b981',
                 pointBorderWidth: 2.5,
-                pointRadius: 4,
+                pointRadius: 3,
                 pointHoverRadius: 6,
-                pointHoverBackgroundColor: '#0ea5e9',
+                pointHoverBackgroundColor: '#10b981',
                 pointHoverBorderColor: '#fff',
                 pointHoverBorderWidth: 2.5
               }
@@ -2748,8 +2711,8 @@
               beforeDatasetsDraw(chart, args, options) {
                 const { ctx } = chart;
                 ctx.save();
-                ctx.shadowColor = 'rgba(15, 23, 42, 0.15)';
-                ctx.shadowBlur = 8;
+                ctx.shadowColor = 'rgba(79, 70, 229, 0.06)';
+                ctx.shadowBlur = 10;
                 ctx.shadowOffsetY = 4;
               },
               afterDatasetsDraw(chart, args, options) {
@@ -2765,8 +2728,8 @@
             animations: {
               y: {
                 type: 'number',
-                easing: 'easeOutElastic',
-                duration: 2000,
+                easing: 'easeOutQuart',
+                duration: 1200,
                 from: (ctx) => {
                   if (ctx.type === 'data') {
                     return ctx.chart.scales.y.getPixelForValue(0);
@@ -2774,30 +2737,42 @@
                 },
                 delay: (ctx) => {
                   if (ctx.type === 'data') {
-                    return ctx.index * 80;
+                    return ctx.index * 60;
                   }
                 }
               },
               opacity: {
                 easing: 'easeInOutQuad',
-                duration: 1000,
+                duration: 800,
                 from: 0,
                 to: 1,
                 delay: (ctx) => {
                   if (ctx.type === 'data') {
-                    return ctx.index * 40;
+                    return ctx.index * 30;
                   }
                 }
               }
             },
             plugins: {
-              legend: { position: 'top', labels: { font: { family: 'Inter', size: 10, weight: 'bold' } } },
+              legend: { 
+                position: 'top', 
+                labels: { 
+                  usePointStyle: true,
+                  pointStyle: 'circle',
+                  boxWidth: 6,
+                  boxHeight: 6,
+                  font: { family: 'Inter', size: 11, weight: 'bold' },
+                  color: '#4b5563'
+                } 
+              },
               tooltip: {
                 backgroundColor: 'rgba(15, 23, 42, 0.95)',
                 titleFont: { size: 12, weight: 'bold', family: 'Inter' },
                 bodyFont: { size: 11, family: 'Inter' },
                 padding: 12,
-                cornerRadius: 12,
+                cornerRadius: 10,
+                borderWidth: 1,
+                borderColor: 'rgba(255, 255, 255, 0.08)',
                 callbacks: {
                   label: function(context) {
                     return ` ${context.dataset.label}: Rp ${context.raw.toLocaleString('id-ID')}`;
@@ -2808,7 +2783,7 @@
             scales: {
               y: {
                 beginAtZero: true,
-                grid: { color: 'rgba(0, 0, 0, 0.04)', drawBorder: false },
+                grid: { color: 'rgba(0, 0, 0, 0.03)', drawBorder: false },
                 ticks: {
                   callback: (value) => 'Rp ' + value.toLocaleString('id-ID'),
                   font: { family: 'Inter', size: 10 },
@@ -3516,6 +3491,8 @@
                   <option value="today">Hari Ini</option>
                   <option value="7days">7 Hari Terakhir</option>
                   <option value="month">Bulan Ini</option>
+                  <option value="year">Tahun Ini</option>
+                  <option value="all">Semua Waktu</option>
                 </select>
                 <button
                   type="button"
@@ -4624,25 +4601,6 @@
               )}
             </div>
 
-            {/* Keyboard Shortcuts Legend */}
-            <div className="hidden lg:flex items-center justify-between gap-2 mt-4 px-5 py-3.5 bg-zinc-50 border border-zinc-200 rounded-2xl text-[10px] text-zinc-500 font-bold shadow-xs">
-              <div className="flex items-center gap-1.5">
-                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F2</span>
-                <span className="font-semibold">Cari Menu</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F4</span>
-                <span className="font-semibold">Diskon</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F7</span>
-                <span className="font-semibold">Bayar</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="px-1.5 py-0.5 bg-white border border-zinc-300 rounded shadow-xs font-mono font-bold text-zinc-700">F9</span>
-                <span className="font-semibold">Pilih Pelanggan</span>
-              </div>
-            </div>
           </div>
 
           {/* Floating Cart Button (Mobile Only) */}
@@ -5903,17 +5861,18 @@
                     <td className="px-6 py-4 text-sm text-zinc-650 text-left">
                       <span className="bg-zinc-50 border border-zinc-150 px-2 py-0.5 rounded-lg text-xs font-medium text-zinc-650">{p.category}</span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-right font-bold text-zinc-800">Rp {p.price.toLocaleString('id-ID')}</td>
+                    <td className="px-6 py-4 text-sm text-right font-semibold font-mono text-zinc-800">Rp {p.price.toLocaleString('id-ID')}</td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-bold border ${p.stock <= 5 ? 'bg-rose-50 border-rose-150 text-rose-600' : 'bg-emerald-50 border-emerald-150 text-emerald-600'}`}>
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${p.stock <= 5 ? 'bg-rose-50 border-rose-100/60 text-rose-700' : 'bg-emerald-50 border-emerald-100/60 text-emerald-700'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${p.stock <= 5 ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`}></span>
                         {p.stock}
                       </span>
                     </td>
                     {['owner', 'admin'].includes(app.user?.role) && (
                       <td className="px-6 py-4">
-                        <div className="flex justify-center gap-2">
-                          <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Edit"><Icon name="edit" size={14} /></button>
-                          <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition" title="Hapus"><Icon name="trash-2" size={14} /></button>
+                        <div className="flex justify-center gap-1.5">
+                          <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 text-zinc-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition" title="Edit"><Icon name="pencil" size={14} /></button>
+                          <button onClick={() => handleDelete(p.id)} className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition" title="Hapus"><Icon name="trash-2" size={14} /></button>
                         </div>
                       </td>
                     )}
@@ -5949,15 +5908,18 @@
                   <div className="text-left">
                     <p className="text-xs text-zinc-500 mb-0.5">Harga & Stok</p>
                     <div className="flex items-center gap-2">
-                       <span className="font-bold text-zinc-800">Rp {p.price.toLocaleString('id-ID')}</span>
+                       <span className="font-semibold font-mono text-zinc-800">Rp {p.price.toLocaleString('id-ID')}</span>
                        <span className="text-zinc-300">•</span>
-                       <span className={`text-xs font-bold ${p.stock <= 5 ? 'text-rose-500' : 'text-emerald-600'}`}>{p.stock} item</span>
+                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${p.stock <= 5 ? 'bg-rose-50 border-rose-100/60 text-rose-700' : 'bg-emerald-50 border-emerald-100/60 text-emerald-700'}`}>
+                         <span className={`w-1 h-1 rounded-full ${p.stock <= 5 ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+                         {p.stock}
+                       </span>
                     </div>
                   </div>
                   {['owner', 'admin'].includes(app.user?.role) && (
-                    <div className="flex gap-2">
-                      <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition"><Icon name="edit" size={14} /></button>
-                      <button onClick={() => handleDelete(p.id)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition"><Icon name="trash-2" size={14} /></button>
+                    <div className="flex gap-1.5">
+                      <button onClick={() => { setEditProduct(p); setShowForm(true); }} className="p-2 text-zinc-500 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition"><Icon name="pencil" size={14} /></button>
+                      <button onClick={() => handleDelete(p.id)} className="p-2 text-zinc-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"><Icon name="trash-2" size={14} /></button>
                     </div>
                   )}
                 </div>
@@ -6617,6 +6579,8 @@
             const d = new Date(t.date);
             return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
           });
+        } else if (filter === 'year') {
+          txs = txs.filter(t => new Date(t.date).getFullYear() === now.getFullYear());
         }
         return txs;
       }, [allTx, filter]);
@@ -6754,15 +6718,15 @@
         
         const ctx = chartRef.current.getContext('2d');
         
-        // Gradient Pendapatan (Orange/Amber Pastel Lembut - Foto 3)
+        // Gradient Pendapatan (Indigo Pastel - Premium Area)
         const gradientSales = ctx.createLinearGradient(0, 0, 0, 240);
-        gradientSales.addColorStop(0, 'rgba(245, 158, 11, 0.25)'); 
-        gradientSales.addColorStop(1, 'rgba(245, 158, 11, 0.0)');
+        gradientSales.addColorStop(0, 'rgba(79, 70, 229, 0.12)'); 
+        gradientSales.addColorStop(1, 'rgba(79, 70, 229, 0.0)');
 
-        // Gradient Laba Bersih (Cyan Pastel Lembut - Foto 2)
+        // Gradient Laba Bersih (Emerald Pastel - Premium Area)
         const gradientProfit = ctx.createLinearGradient(0, 0, 0, 240);
-        gradientProfit.addColorStop(0, 'rgba(14, 165, 233, 0.25)'); 
-        gradientProfit.addColorStop(1, 'rgba(14, 165, 233, 0.0)');
+        gradientProfit.addColorStop(0, 'rgba(16, 185, 129, 0.12)'); 
+        gradientProfit.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
 
         let datasets = [];
 
@@ -6772,49 +6736,49 @@
               type: 'line',
               label: 'Pendapatan',
               data: chartDataSales,
-              borderColor: '#f59e0b', // Orange Pastel Lembut
+              borderColor: '#4f46e5', // Indigo-600
               backgroundColor: gradientSales,
               borderWidth: 3,
               pointBackgroundColor: '#fff',
-              pointBorderColor: '#f59e0b',
+              pointBorderColor: '#4f46e5',
               pointBorderWidth: 2.5,
-              pointRadius: 4,
+              pointRadius: 3,
               pointHoverRadius: 6,
-              pointHoverBackgroundColor: '#f59e0b',
+              pointHoverBackgroundColor: '#4f46e5',
               pointHoverBorderColor: '#fff',
               pointHoverBorderWidth: 2,
               fill: true,
-              tension: 0.4
+              tension: 0.35
             },
             {
               type: 'line',
               label: 'Laba Bersih',
               data: chartDataProfit,
-              borderColor: '#0ea5e9', // Cyan Pastel Lembut
+              borderColor: '#10b981', // Emerald-500
               backgroundColor: gradientProfit,
               borderWidth: 3,
               pointBackgroundColor: '#fff',
-              pointBorderColor: '#0ea5e9',
+              pointBorderColor: '#10b981',
               pointBorderWidth: 2.5,
-              pointRadius: 4,
+              pointRadius: 3,
               pointHoverRadius: 6,
-              pointHoverBackgroundColor: '#0ea5e9',
+              pointHoverBackgroundColor: '#10b981',
               pointHoverBorderColor: '#fff',
               pointHoverBorderWidth: 2,
               fill: true,
-              tension: 0.4
+              tension: 0.35
             }
           ];
         } else {
           // Bar Gradient Pendapatan
           const barGradSales = ctx.createLinearGradient(0, 0, 0, 240);
-          barGradSales.addColorStop(0, '#fbbf24');
-          barGradSales.addColorStop(1, '#f59e0b');
+          barGradSales.addColorStop(0, '#6366f1'); // Indigo-500
+          barGradSales.addColorStop(1, '#4f46e5'); // Indigo-600
 
           // Bar Gradient Laba Bersih
           const barGradProfit = ctx.createLinearGradient(0, 0, 0, 240);
-          barGradProfit.addColorStop(0, '#38bdf8');
-          barGradProfit.addColorStop(1, '#0ea5e9');
+          barGradProfit.addColorStop(0, '#34d399'); // Emerald-400
+          barGradProfit.addColorStop(1, '#10b981'); // Emerald-500
 
           datasets = [
             {
@@ -6826,7 +6790,7 @@
               borderWidth: 0,
               borderRadius: { topLeft: 6, topRight: 6, bottomLeft: 0, bottomRight: 0 },
               borderSkipped: false,
-              barPercentage: 0.7,
+              barPercentage: 0.6,
               categoryPercentage: 0.6
             },
             {
@@ -6838,13 +6802,13 @@
               borderWidth: 0,
               borderRadius: { topLeft: 6, topRight: 6, bottomLeft: 0, bottomRight: 0 },
               borderSkipped: false,
-              barPercentage: 0.7,
+              barPercentage: 0.6,
               categoryPercentage: 0.6
             }
           ];
         }
 
-        // Custom plugin to draw numbers on top of chart elements (Foto 2, 3 & 4 labels)
+        // Custom plugin to draw numbers on top of chart elements with smart anti-overlap
         const customLabelsPlugin = {
           id: 'customLabels',
           afterDatasetsDraw(chart) {
@@ -6854,9 +6818,12 @@
             ctx.textAlign = 'center';
             ctx.textBaseline = 'bottom';
             
+            const step = chartLabels.length > 12 ? 2 : 1; // Draw every 2nd value if too many dates to prevent clutter
+            
             chart.data.datasets.forEach((dataset, datasetIndex) => {
               const meta = chart.getDatasetMeta(datasetIndex);
               meta.data.forEach((element, index) => {
+                if (index % step !== 0) return;
                 const dataValue = dataset.data[index];
                 if (dataValue > 0) {
                   let text = '';
@@ -6870,9 +6837,7 @@
                   
                   const x = element.x;
                   const y = element.y - (chart.config.type === 'bar' ? 4 : 8);
-                  ctx.fillStyle = dataset.borderColor && dataset.borderColor !== 'transparent' 
-                    ? dataset.borderColor 
-                    : (datasetIndex === 0 ? '#d97706' : '#0284c7');
+                  ctx.fillStyle = datasetIndex === 0 ? '#4f46e5' : '#10b981';
                   
                   ctx.fillText(text, x, y);
                 }
@@ -6904,7 +6869,7 @@
                   if (ctx.type === 'data') return ctx.chart.scales.y.getPixelForValue(0);
                 },
                 delay: (ctx) => {
-                  if (ctx.type === 'data') return ctx.index * 50;
+                  if (ctx.type === 'data') return ctx.index * 40;
                 }
               },
               opacity: {
@@ -6913,7 +6878,7 @@
                 from: 0,
                 to: 1,
                 delay: (ctx) => {
-                  if (ctx.type === 'data') return ctx.index * 30;
+                  if (ctx.type === 'data') return ctx.index * 25;
                 }
               }
             },
@@ -6923,8 +6888,8 @@
                 position: 'top',
                 align: 'end',
                 labels: {
-                  boxWidth: 8,
-                  boxHeight: 8,
+                  boxWidth: 6,
+                  boxHeight: 6,
                   usePointStyle: true,
                   pointStyle: 'circle',
                   font: { family: 'Inter', size: 10, weight: 'bold' },
@@ -6936,12 +6901,12 @@
                 titleFont: { size: 12, weight: 'bold', family: 'Inter' },
                 bodyFont: { size: 11, family: 'Inter' },
                 padding: 12,
-                cornerRadius: 12,
+                cornerRadius: 10,
                 displayColors: true,
-                boxWidth: 8,
-                boxHeight: 8,
+                boxWidth: 6,
+                boxHeight: 6,
                 usePointStyle: true,
-                borderColor: 'rgba(255, 255, 255, 0.1)',
+                borderColor: 'rgba(255, 255, 255, 0.08)',
                 borderWidth: 1,
                 callbacks: {
                   label: function(context) {
@@ -6987,6 +6952,7 @@
                 <option value="today">Hari Ini</option>
                 <option value="7days">7 Hari Terakhir</option>
                 <option value="month">Bulan Ini</option>
+                <option value="year">Tahun Ini</option>
                 <option value="all">Semua Waktu</option>
               </select>
               <button onClick={exportCSV} className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold shadow-sm flex items-center gap-2 transition active:scale-95" title="Ekspor ke CSV (Excel)">
@@ -7023,10 +6989,10 @@
             <div className="flex justify-between items-center mb-4">
               <h4 className="font-bold text-zinc-800">Grafik Penjualan</h4>
               <div className="flex bg-zinc-100 p-1 rounded-xl">
-                <button onClick={() => setChartType('line')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${chartType === 'line' ? 'bg-white shadow-sm text-sky-600' : 'text-zinc-500 hover:text-zinc-800'}`}>
+                <button onClick={() => setChartType('line')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${chartType === 'line' ? 'bg-white shadow-sm text-indigo-600 border border-zinc-200/50' : 'text-zinc-500 hover:text-zinc-800'}`}>
                   <Icon name="activity" size={14} /> Area
                 </button>
-                <button onClick={() => setChartType('bar')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${chartType === 'bar' ? 'bg-white shadow-sm text-sky-600' : 'text-zinc-500 hover:text-zinc-800'}`}>
+                <button onClick={() => setChartType('bar')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${chartType === 'bar' ? 'bg-white shadow-sm text-emerald-600 border border-zinc-200/50' : 'text-zinc-500 hover:text-zinc-800'}`}>
                   <Icon name="bar-chart" size={14} /> Batang
                 </button>
               </div>
@@ -7155,15 +7121,18 @@
                           {diff === 0 ? 'Pas' : diff > 0 ? `+Rp ${diff.toLocaleString('id-ID')}` : `-Rp ${Math.abs(diff).toLocaleString('id-ID')}`}
                         </td>
                         <td className="px-6 py-4 text-center">
-                          <span className={`px-2.5 py-0.5 rounded-lg text-xs font-bold ${s.status === 'open' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-500'}`}>
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
+                            s.status === 'open' ? 'bg-emerald-50 text-emerald-700 border-emerald-100/60' : 'bg-zinc-50 text-zinc-600 border-zinc-200/60'
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'open' ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-400'}`}></span>
                             {s.status === 'open' ? 'Buka' : 'Tutup'}
                           </span>
                         </td>
                         <td className="px-6 py-4">
                           {['admin', 'owner'].includes(app.user?.role) && (
-                          <div className="flex justify-end gap-2 pr-2">
-                            <button onClick={() => setShowShiftModal({ mode: 'edit', shift: s })} className="p-2 text-sky-600 bg-sky-50 hover:bg-sky-100 rounded-lg transition" title="Edit Shift"><Icon name="edit" size={14} /></button>
-                            <button onClick={() => handleDeleteShiftClick(s.id)} className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition" title="Hapus Shift"><Icon name="trash-2" size={14} /></button>
+                          <div className="flex justify-end gap-1.5 pr-2">
+                            <button onClick={() => setShowShiftModal({ mode: 'edit', shift: s })} className="p-2 text-zinc-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition" title="Edit Shift"><Icon name="pencil" size={14} /></button>
+                            <button onClick={() => handleDeleteShiftClick(s.id)} className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition" title="Hapus Shift"><Icon name="trash-2" size={14} /></button>
                           </div>
                           )}
                         </td>
@@ -7790,26 +7759,34 @@
                       </div>
                     </td>
                     <td className="px-5 py-4">
-                      <span className="inline-flex px-2 py-0.5 rounded-lg border border-zinc-150 bg-zinc-50/50 text-zinc-650 text-[11px] font-semibold">{roleLabel(u.role)}</span>
+                      <span className={`inline-flex px-2.5 py-0.5 rounded-lg border text-[11px] font-semibold ${
+                        u.role === 'owner' ? 'bg-sky-50 text-sky-700 border-sky-100/85' :
+                        u.role === 'admin' ? 'bg-violet-50 text-violet-700 border-violet-100/85' :
+                        u.role === 'cashier' ? 'bg-amber-50 text-amber-700 border-amber-100/85' :
+                        u.role === 'keuangan' ? 'bg-emerald-50 text-emerald-700 border-emerald-100/85' :
+                        'bg-zinc-50 text-zinc-700 border-zinc-200'
+                      }`}>{roleLabel(u.role)}</span>
                     </td>
                     <td className="px-5 py-4">
-                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-xs font-bold border ${u.active === false ? 'bg-zinc-50 border-zinc-200 text-zinc-400' : 'bg-emerald-50/40 border-emerald-200 text-emerald-600'}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${u.active === false ? 'bg-zinc-400' : 'bg-emerald-500'}`}></span>
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
+                        u.active === false ? 'bg-zinc-50 border-zinc-200 text-zinc-500' : 'bg-emerald-50 text-emerald-700 border-emerald-100/60'
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${u.active === false ? 'bg-zinc-400' : 'bg-emerald-500 animate-pulse'}`}></span>
                         {u.active === false ? 'Nonaktif' : 'Aktif'}
                       </span>
                     </td>
                     <td className="px-5 py-4 text-sm text-zinc-500">{formatTimeAgo(u.updatedAt || u.createdAt)}</td>
                     {['admin', 'owner'].includes(app.user?.role) && (
                     <td className="px-5 py-4">
-                      <div className="flex justify-end gap-2">
+                      <div className="flex justify-end gap-1.5">
                         {u.role === 'owner' && app.user?.role !== 'owner' ? (
                           <span className="text-xs text-zinc-400 font-medium italic">Diproteksi</span>
                         ) : (
                           <>
-                            <button onClick={() => setScannerUser(u)} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Ambil Foto"><Icon name="camera" size={15} /></button>
-                            <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title="Edit"><Icon name="pencil" size={15} /></button>
-                            <button onClick={() => toggleActive(u)} className="p-2 bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 rounded-xl transition" title={u.active === false ? 'Aktifkan' : 'Nonaktifkan'}><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={15} /></button>
-                            <button onClick={() => deleteUser(u)} className="p-2 bg-white border border-zinc-200 text-rose-600 hover:bg-rose-50 hover:border-rose-250 rounded-xl transition" title="Hapus"><Icon name="trash-2" size={15} /></button>
+                            <button onClick={() => setScannerUser(u)} className="p-2 text-zinc-450 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition" title="Ambil Foto"><Icon name="camera" size={15} /></button>
+                            <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="p-2 text-zinc-450 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition" title="Edit"><Icon name="pencil" size={15} /></button>
+                            <button onClick={() => toggleActive(u)} className="p-2 text-zinc-450 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition" title={u.active === false ? 'Aktifkan' : 'Nonaktifkan'}><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={15} /></button>
+                            <button onClick={() => deleteUser(u)} className="p-2 text-zinc-450 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition" title="Hapus"><Icon name="trash-2" size={15} /></button>
                           </>
                         )}
                       </div>
@@ -7832,8 +7809,17 @@
                     <p className="font-bold text-zinc-800 truncate">{u.name}</p>
                     <p className="text-xs text-zinc-500 truncate">{u.email}</p>
                     <div className="flex flex-wrap gap-2 mt-2">
-                      <span className="px-2 py-0.5 rounded-lg border border-zinc-150 bg-zinc-50/50 text-zinc-650 text-[10px] font-semibold">{roleLabel(u.role)}</span>
-                      <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${u.active === false ? 'bg-zinc-50 border-zinc-200 text-zinc-400' : 'bg-emerald-50/40 border-emerald-250 text-emerald-600'}`}>
+                      <span className={`px-2 py-0.5 rounded-lg border text-[10px] font-semibold ${
+                        u.role === 'owner' ? 'bg-sky-50 text-sky-700 border-sky-100/85' :
+                        u.role === 'admin' ? 'bg-violet-50 text-violet-700 border-violet-100/85' :
+                        u.role === 'cashier' ? 'bg-amber-50 text-amber-700 border-amber-100/85' :
+                        u.role === 'keuangan' ? 'bg-emerald-50 text-emerald-700 border-emerald-100/85' :
+                        'bg-zinc-50 text-zinc-700 border-zinc-200'
+                      }`}>{roleLabel(u.role)}</span>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        u.active === false ? 'bg-zinc-50 border-zinc-200 text-zinc-500' : 'bg-emerald-50 text-emerald-700 border-emerald-100/60'
+                      }`}>
+                        <span className={`w-1 h-1 rounded-full ${u.active === false ? 'bg-zinc-400' : 'bg-emerald-500 animate-pulse'}`}></span>
                         {u.active === false ? 'Nonaktif' : 'Aktif'}
                       </span>
                     </div>
@@ -7845,10 +7831,10 @@
                     <div className="col-span-4 text-center py-2 bg-zinc-50 rounded-xl text-xs text-zinc-400 font-medium italic">Akun Owner Diproteksi</div>
                   ) : (
                     <>
-                      <button onClick={() => setScannerUser(u)} className="py-2 bg-white border border-zinc-200 text-zinc-600 rounded-xl flex justify-center hover:bg-zinc-50 transition"><Icon name="camera" size={16} /></button>
-                      <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="py-2 bg-white border border-zinc-200 text-zinc-600 rounded-xl flex justify-center hover:bg-zinc-50 transition"><Icon name="pencil" size={16} /></button>
-                      <button onClick={() => toggleActive(u)} className="py-2 bg-white border border-zinc-200 text-zinc-600 rounded-xl flex justify-center hover:bg-zinc-50 transition"><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={16} /></button>
-                      <button onClick={() => deleteUser(u)} className="py-2 bg-white border border-zinc-200 text-rose-600 rounded-xl flex justify-center hover:bg-rose-50 hover:border-rose-250 transition"><Icon name="trash-2" size={16} /></button>
+                      <button onClick={() => setScannerUser(u)} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl flex justify-center transition"><Icon name="camera" size={16} /></button>
+                      <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-sky-600 hover:bg-sky-50 rounded-xl flex justify-center transition"><Icon name="pencil" size={16} /></button>
+                      <button onClick={() => toggleActive(u)} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-amber-600 hover:bg-amber-50 rounded-xl flex justify-center transition"><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={16} /></button>
+                      <button onClick={() => deleteUser(u)} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-rose-600 hover:bg-rose-50 rounded-xl flex justify-center transition"><Icon name="trash-2" size={16} /></button>
                     </>
                   )}
                 </div>
@@ -8245,10 +8231,10 @@
                           {p.notes && <div className="text-[10px] text-zinc-500 italic mt-1 font-mono">Ket: {p.notes}</div>}
                         </td>
                         <td className="px-5 py-4">
-                          <span className={`inline-flex px-2 py-0.5 rounded-lg text-xs font-bold ${
-                            p.type === 'buy' ? 'bg-sky-50 text-sky-700' :
-                            p.type === 'refund' ? 'bg-amber-50 text-amber-700' :
-                            p.type === 'take' ? 'bg-violet-50 text-violet-700' : 'bg-rose-50 text-rose-700'
+                          <span className={`inline-flex px-2 py-0.5 rounded-lg text-xs font-semibold border ${
+                            p.type === 'buy' ? 'bg-sky-50/60 text-sky-700 border-sky-100' :
+                            p.type === 'refund' ? 'bg-amber-50/60 text-amber-700 border-amber-100' :
+                            p.type === 'take' ? 'bg-violet-50/60 text-violet-700 border-violet-100' : 'bg-rose-50/60 text-rose-700 border-rose-100'
                           }`}>
                             {p.type === 'buy' ? 'Beli Baru / Restock' :
                              p.type === 'refund' ? 'Retur Pemasok' :
@@ -8260,11 +8246,16 @@
                           <div className="text-xs text-zinc-450">{p.approvedQty || p.qty} pcs @ Rp {p.cost?.toLocaleString('id-ID')}</div>
                         </td>
                         <td className="px-5 py-4 text-center">
-                          <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${
-                            p.status === 'approved' ? 'bg-emerald-50 text-emerald-700' :
-                            p.status === 'rejected' ? 'bg-rose-50 text-rose-700' :
-                            p.status === 'void' ? 'bg-zinc-100 text-zinc-500' : 'bg-amber-50 text-amber-700 animate-pulse'
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
+                            p.status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-100/60' :
+                            p.status === 'rejected' ? 'bg-rose-50 text-rose-700 border-rose-100/60' :
+                            p.status === 'void' ? 'bg-zinc-50 text-zinc-500 border-zinc-200/60' : 'bg-amber-50 text-amber-700 border-amber-100/60'
                           }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              p.status === 'approved' ? 'bg-emerald-500' :
+                              p.status === 'rejected' ? 'bg-rose-500' :
+                              p.status === 'void' ? 'bg-zinc-400' : 'bg-amber-500'
+                            }`}></span>
                             {p.status === 'approved' ? 'Disetujui' :
                              p.status === 'rejected' ? 'Ditolak' :
                              p.status === 'void' ? 'Dibatalkan' : 'Menunggu'}
@@ -8311,14 +8302,14 @@
                               <>
                                 <button
                                   onClick={() => setEditingPurchase({ ...p })}
-                                  className="p-1.5 text-sky-600 hover:bg-sky-50 rounded-lg transition"
+                                  className="p-2 text-zinc-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition"
                                   title="Edit Pengadaan"
                                 >
                                   <Icon name="pencil" size={14} />
                                 </button>
                                 <button
                                   onClick={() => handleDeletePurchase(p.id)}
-                                  className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                  className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
                                   title="Hapus Pengadaan"
                                 >
                                   <Icon name="trash-2" size={14} />
