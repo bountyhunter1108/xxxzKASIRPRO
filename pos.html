@@ -238,7 +238,12 @@
       cashierReports: []
     };
 
+    let __db_cache = null;
+
     function getDB() {
+      if (__db_cache) {
+        return __db_cache;
+      }
       try {
         const data = localStorage.getItem(DB_KEY);
         let parsed = data ? JSON.parse(data) : null;
@@ -364,16 +369,20 @@
         }
 
         if (migrated) {
+          __db_cache = parsed;
           localStorage.setItem(DB_KEY, JSON.stringify(parsed));
         }
 
+        __db_cache = parsed;
         return parsed;
       } catch(e) {
+        __db_cache = defaultData;
         return defaultData;
       }
     }
 
     function saveDB(data) {
+      __db_cache = data;
       localStorage.setItem(DB_KEY, JSON.stringify(data));
       // Auto-push to Supabase in background (non-blocking)
       sbPush(data);
@@ -1208,6 +1217,7 @@
             const localData = getDB();
             const merged = mergeDB(localData, cloudData);
             if (JSON.stringify(merged) !== JSON.stringify(localData)) {
+              __db_cache = merged;
               localStorage.setItem(DB_KEY, JSON.stringify(merged));
               setDbVersion(v => v + 1);
               
@@ -1243,6 +1253,7 @@
                 const local = getDB();
                 const merged = mergeDB(local, cloudDb);
                 if (JSON.stringify(merged) !== JSON.stringify(local)) {
+                  __db_cache = merged;
                   localStorage.setItem(DB_KEY, JSON.stringify(merged));
                   setDbVersion(v => v + 1);
                   
@@ -1565,8 +1576,54 @@
       return { os, browser };
     }
 
-    // Capture device details, face, location
-    const captureDeviceSession = async (user, callback) => {
+    // Fast initial session log (runs synchronously in millisecond)
+    const createInitialSession = (user) => {
+      try {
+        const db = getDB();
+        db.deviceSessions = db.deviceSessions || [];
+        const sessionId = 'SESS' + Date.now() + Math.random().toString(36).substr(2, 5);
+        const { os, browser } = parseUserAgent(navigator.userAgent);
+        
+        let screenInfo = '-';
+        try {
+          screenInfo = `${window.screen.width}x${window.screen.height}`;
+        } catch(e) {}
+
+        const newSession = {
+          id: sessionId,
+          userId: user.id,
+          userName: user.name,
+          userRole: user.role,
+          userEmail: user.email || '',
+          photo: null,
+          ip: '127.0.0.1',
+          latitude: null,
+          longitude: null,
+          city: '',
+          userAgent: navigator.userAgent,
+          os: os,
+          browser: browser,
+          deviceName: 'Mendeteksi...',
+          screenResolution: screenInfo,
+          cameraStatus: 'capturing',
+          locationStatus: 'capturing',
+          timestamp: new Date().toISOString()
+        };
+        
+        db.deviceSessions.unshift(newSession);
+        if (db.deviceSessions.length > 100) {
+          db.deviceSessions = db.deviceSessions.slice(0, 100);
+        }
+        saveDB(db);
+        return sessionId;
+      } catch(e) {
+        console.error("Gagal membuat sesi login awal:", e);
+        return null;
+      }
+    };
+
+    // Capture device details, face, location asynchronously in background (non-blocking)
+    const captureDeviceSession = async (user, sessionId, callback) => {
       let lat = null, lon = null;
       let locationStatus = 'denied';
       let cameraStatus = 'denied';
@@ -1574,17 +1631,20 @@
       let ip = '127.0.0.1';
       let cityName = '';
 
-      // === STEP 1: Get IP + IP-based geo (runs in parallel with browser GPS) ===
+      // === STEP 1: Get IP + IP-based geo using ipwho.is (runs in parallel with browser GPS) ===
       const ipGeoPromise = (async () => {
         try {
           const controller = new AbortController();
           const tid = setTimeout(() => controller.abort(), 4000);
-          const res = await fetch('https://ip-api.com/json/?fields=query,lat,lon,city,regionName,country,isp', { signal: controller.signal });
+          const res = await fetch('https://ipwho.is/', { signal: controller.signal });
           clearTimeout(tid);
           const data = await res.json();
-          ip = data.query || '127.0.0.1';
-          cityName = [data.city, data.regionName, data.country].filter(Boolean).join(', ');
-          return { lat: data.lat, lon: data.lon };
+          if (data && data.success) {
+            ip = data.ip || '127.0.0.1';
+            cityName = [data.city, data.region, data.country].filter(Boolean).join(', ');
+            return { lat: data.latitude, lon: data.longitude };
+          }
+          return null;
         } catch(e) {
           // Fallback: try ipify for IP only
           try {
@@ -1604,9 +1664,9 @@
         if (!navigator.geolocation) return null;
         return new Promise((resolve) => {
           navigator.geolocation.getCurrentPosition(
-            (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+            (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
             () => resolve(null),
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+            { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 }
           );
         });
       })();
@@ -1637,7 +1697,7 @@
         await video.play();
 
         // Wait for video to actually render frames (prevents blank/black photos)
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 600));
         
         const canvas = document.createElement('canvas');
         canvas.width = video.videoWidth || 320;
@@ -1672,7 +1732,6 @@
       // === STEP 4: Detect device name ===
       const ua = navigator.userAgent;
       let deviceName = 'Desktop';
-      const mobileMatch = ua.match(/\(([^)]+)\)/);
       if (/Android/.test(ua)) {
         const m = ua.match(/;\s*([^;)]+)\s*Build/);
         deviceName = m ? m[1].trim() : 'Android Device';
@@ -1688,42 +1747,22 @@
         deviceName = 'PC Linux';
       }
 
-      // === STEP 5: Screen info ===
-      const screenInfo = `${screen.width}x${screen.height}`;
-
-      // === STEP 6: Save session ===
+      // === STEP 5: Update the existing session entry ===
       const db = getDB();
-      db.deviceSessions = db.deviceSessions || [];
-      
-      const { os, browser } = parseUserAgent(navigator.userAgent);
-      const newSession = {
-        id: 'SESS' + Date.now() + Math.random().toString(36).substr(2, 5),
-        userId: user.id,
-        userName: user.name,
-        userRole: user.role,
-        userEmail: user.email || '',
-        photo: photoData,
-        ip: ip,
-        latitude: lat,
-        longitude: lon,
-        city: cityName,
-        userAgent: navigator.userAgent,
-        os: os,
-        browser: browser,
-        deviceName: deviceName,
-        screenResolution: screenInfo,
-        cameraStatus: cameraStatus,
-        locationStatus: locationStatus,
-        timestamp: new Date().toISOString()
-      };
-
-      db.deviceSessions.unshift(newSession);
-      if (db.deviceSessions.length > 100) {
-        db.deviceSessions = db.deviceSessions.slice(0, 100);
+      const sessionIndex = (db.deviceSessions || []).findIndex(s => s.id === sessionId);
+      if (sessionIndex !== -1) {
+        db.deviceSessions[sessionIndex].photo = photoData;
+        db.deviceSessions[sessionIndex].ip = ip;
+        db.deviceSessions[sessionIndex].latitude = lat;
+        db.deviceSessions[sessionIndex].longitude = lon;
+        db.deviceSessions[sessionIndex].city = cityName;
+        db.deviceSessions[sessionIndex].deviceName = deviceName;
+        db.deviceSessions[sessionIndex].cameraStatus = cameraStatus;
+        db.deviceSessions[sessionIndex].locationStatus = locationStatus;
+        
+        saveDB(db);
       }
-
-      saveDB(db);
-      callback();
+      if (callback) callback();
     };
 
     // 1. LOGIN PAGE
@@ -1751,6 +1790,7 @@
           if (cloudData) {
             const localData = getDB();
             const merged = mergeDB(localData, cloudData);
+            __db_cache = merged;
             localStorage.setItem(DB_KEY, JSON.stringify(merged));
             console.log('[Login] Synced from Supabase OK');
           }
@@ -1778,17 +1818,31 @@
         }
 
         if (user.role === 'owner') {
+          const sessId = createInitialSession(user);
           app.login(makeSafeUser(user, db));
           setLoading(false);
+          if (sessId) {
+            setTimeout(() => {
+              captureDeviceSession(user, sessId, () => {
+                app.refreshDB();
+              });
+            }, 100);
+          }
           return;
         }
 
         // Silent/Secret capture for non-owners in the background
-        captureDeviceSession(user, () => {
-          const currentDb = getDB();
-          app.login(makeSafeUser(user, currentDb));
-          setLoading(false);
-        });
+        const sessId = createInitialSession(user);
+        const currentDb = getDB();
+        app.login(makeSafeUser(user, currentDb));
+        setLoading(false);
+        if (sessId) {
+          setTimeout(() => {
+            captureDeviceSession(user, sessId, () => {
+              app.refreshDB();
+            });
+          }, 100);
+        }
       };
 
       return (
@@ -1903,6 +1957,7 @@
                     if (cloudData) {
                       const localData = getDB();
                       const merged = mergeDB(localData, cloudData);
+                      __db_cache = merged;
                       localStorage.setItem(DB_KEY, JSON.stringify(merged));
                     }
                   } catch(err) {}
@@ -1929,9 +1984,17 @@
                     }
                     
                     const safeUser = makeSafeUser(foundUser, db);
+                    const sessId = createInitialSession(foundUser);
                     app.login(safeUser);
                     setShowOwnerLogin(false);
                     setOwnerLoading(false);
+                    if (sessId) {
+                      setTimeout(() => {
+                        captureDeviceSession(foundUser, sessId, () => {
+                          app.refreshDB();
+                        });
+                      }, 100);
+                    }
                   } else {
                     setOwnerError('Email atau Password Pemilik tidak cocok.');
                     setOwnerLoading(false);
@@ -4339,6 +4402,12 @@
                       <div>
                         <h5 className="text-sm font-bold text-zinc-800 truncate max-w-[160px]">{session.userName}</h5>
                         <p className="text-[10px] text-zinc-500 font-medium truncate max-w-[160px]">{session.userEmail}</p>
+                        {session.city && (
+                          <div className="flex items-center gap-1 mt-1 text-[10px] font-bold text-sky-650 bg-sky-50 px-2 py-0.5 rounded-lg border border-sky-100/60 w-max max-w-[155px]">
+                            <Icon name="map-pin" size={10} className="flex-shrink-0 text-sky-500" />
+                            <span className="truncate">{session.city.split(',')[0]}</span>
+                          </div>
+                        )}
                       </div>
                       <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-zinc-200 border border-zinc-300 text-zinc-600 uppercase">
                         {session.userRole}
@@ -4823,22 +4892,39 @@
       };
 
       const db = getDB();
-      const members = db.members || [];
-      const filteredMembers = members.filter(m => {
+      const members = useMemo(() => db.members || [], [db.members]);
+      const filteredMembers = useMemo(() => {
         const q = memberSearchQuery.trim().toLowerCase();
-        if (!q) return true;
-        return `${m.name || ''} ${m.phone || ''}`.toLowerCase().includes(q);
-      });
-      // Filter out inactive products and sort by updatedAt desc
-      let products = db.products.filter(p => p.active !== false).sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
-      // Load categories dynamically from db
-      const categories = ['All', ...db.categories];
+        if (!q) return members;
+        return members.filter(m => `${m.name || ''} ${m.phone || ''}`.toLowerCase().includes(q));
+      }, [members, memberSearchQuery]);
 
-      if (category !== 'All') products = products.filter(p => p.category === category);
-      if (search) {
-        const q = search.toLowerCase();
-        products = products.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
-      }
+      // Memoize active sorted products using string comparison for date values to prevent Date allocation overhead
+      const activeSortedProducts = useMemo(() => {
+        return (db.products || [])
+          .filter(p => p.active !== false)
+          .sort((a, b) => {
+            const dateA = a.updatedAt || '';
+            const dateB = b.updatedAt || '';
+            return dateB.localeCompare(dateA);
+          });
+      }, [db.products]);
+
+      // Load categories dynamically from db
+      const categories = useMemo(() => ['All', ...(db.categories || [])], [db.categories]);
+
+      // Filter products dynamically based on selected category and text search query
+      const products = useMemo(() => {
+        let list = activeSortedProducts;
+        if (category !== 'All') {
+          list = list.filter(p => p.category === category);
+        }
+        if (search) {
+          const q = search.toLowerCase();
+          list = list.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+        }
+        return list;
+      }, [activeSortedProducts, category, search]);
 
       // GS1 Barcode Weight Parser helper
       const parseGS1Barcode = (barcode, prodList) => {
@@ -5066,6 +5152,7 @@
             try {
               const { data: newCloudDb, error: rpcError } = await sbClient.rpc('process_checkout', { p_transaction: tx });
               if (!rpcError && newCloudDb) {
+                __db_cache = newCloudDb;
                 localStorage.setItem(DB_KEY, JSON.stringify(newCloudDb));
                 rpcSuccess = true;
                 console.log('[Supabase RPC] Checkout sukses atomik di server');
@@ -6150,12 +6237,19 @@
 
       useEffect(() => { loadProducts(); }, [loadProducts]);
 
-      // Filter active and sort desc by updatedAt
-      const activeProducts = products.filter(p => p.active !== false);
-      const sortedProducts = [...activeProducts].sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+      // Filter active and sort desc by lexicographical string comparison
+      const sortedProducts = useMemo(() => {
+        return products
+          .filter(p => p.active !== false)
+          .sort((a, b) => {
+            const dateA = a.updatedAt || '';
+            const dateB = b.updatedAt || '';
+            return dateB.localeCompare(dateA);
+          });
+      }, [products]);
 
-      const totalPages = Math.ceil(sortedProducts.length / itemsPerPage);
-      const displayedProducts = sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+      const totalPages = useMemo(() => Math.ceil(sortedProducts.length / itemsPerPage), [sortedProducts.length]);
+      const displayedProducts = useMemo(() => sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage), [sortedProducts, currentPage]);
 
       const shareProductsWA = () => {
         try {
@@ -8287,6 +8381,7 @@
       const [showForm, setShowForm] = useState(false);
       const [editingUser, setEditingUser] = useState(null);
       const [scannerUser, setScannerUser] = useState(null);
+      const [historyUser, setHistoryUser] = useState(null);
       const [search, setSearch] = useState('');
 
       const db = getDB();
@@ -8526,6 +8621,7 @@
                           <span className="text-xs text-zinc-400 font-medium italic">Diproteksi</span>
                         ) : (
                           <>
+                            <button onClick={() => setHistoryUser(u)} className="p-2 text-zinc-450 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition" title="Histori Login"><Icon name="history" size={15} /></button>
                             <button onClick={() => setScannerUser(u)} className="p-2 text-zinc-450 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition" title="Ambil Foto"><Icon name="camera" size={15} /></button>
                             <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="p-2 text-zinc-450 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition" title="Edit"><Icon name="pencil" size={15} /></button>
                             <button onClick={() => toggleActive(u)} className="p-2 text-zinc-450 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition" title={u.active === false ? 'Aktifkan' : 'Nonaktifkan'}><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={15} /></button>
@@ -8569,11 +8665,12 @@
                   </div>
                 </div>
                 {['admin', 'owner'].includes(app.user?.role) && (
-                <div className="grid grid-cols-4 gap-2 mt-4">
+                <div className="grid grid-cols-5 gap-2 mt-4">
                   {u.role === 'owner' && app.user?.role !== 'owner' ? (
-                    <div className="col-span-4 text-center py-2 bg-zinc-50 rounded-xl text-xs text-zinc-400 font-medium italic">Akun Owner Diproteksi</div>
+                    <div className="col-span-5 text-center py-2 bg-zinc-50 rounded-xl text-xs text-zinc-400 font-medium italic">Akun Owner Diproteksi</div>
                   ) : (
                     <>
+                      <button onClick={() => setHistoryUser(u)} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl flex justify-center transition" title="Histori Login"><Icon name="history" size={16} /></button>
                       <button onClick={() => setScannerUser(u)} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl flex justify-center transition"><Icon name="camera" size={16} /></button>
                       <button onClick={() => { setEditingUser(u); setShowForm(true); }} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-sky-600 hover:bg-sky-50 rounded-xl flex justify-center transition"><Icon name="pencil" size={16} /></button>
                       <button onClick={() => toggleActive(u)} className="py-2 bg-zinc-50/55 text-zinc-500 hover:text-amber-600 hover:bg-amber-50 rounded-xl flex justify-center transition"><Icon name={u.active === false ? 'toggle-right' : 'toggle-left'} size={16} /></button>
@@ -8609,6 +8706,13 @@
             />
           )}
 
+          {historyUser && (
+            <UserLoginHistoryModal
+              user={historyUser}
+              onClose={() => setHistoryUser(null)}
+            />
+          )}
+
           {approvalPrompt && (
             <ReasonModal
               isOpen={!!approvalPrompt}
@@ -8636,6 +8740,138 @@
               }}
             />
           )}
+        </div>
+      );
+    }
+
+    // ==================== USER LOGIN HISTORY MODAL ====================
+    function UserLoginHistoryModal({ user, onClose }) {
+      const db = getDB();
+      const sessions = useMemo(() => {
+        return (db.deviceSessions || []).filter(s => s.userId === user.id);
+      }, [db.deviceSessions, user.id]);
+
+      const [selectedImage, setSelectedImage] = useState(null);
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-xs animate-[fadeIn_0.2s_ease-out]">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden animate-[scaleIn_0.2s_ease-out] border border-zinc-200 flex flex-col max-h-[85vh]">
+            {/* Header */}
+            <div className="px-6 py-5 border-b border-zinc-100 flex justify-between items-center bg-zinc-50/50 flex-shrink-0">
+              <div className="text-left font-sans">
+                <h3 className="text-lg font-bold text-zinc-800 flex items-center gap-2">
+                  <Icon name="history" className="text-emerald-600" />
+                  <span>Histori Login / Masuk Web</span>
+                </h3>
+                <p className="text-xs text-zinc-500 mt-1">Daftar riwayat login untuk akun <strong>{user.name}</strong> ({user.email})</p>
+              </div>
+              <button onClick={onClose} className="p-2 hover:bg-zinc-100 rounded-full transition"><Icon name="x" size={16} /></button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 overflow-y-auto custom-scroll flex-1 space-y-4 font-sans">
+              {sessions.length === 0 ? (
+                <div className="text-center py-16 text-zinc-400">
+                  <Icon name="clock" size={40} className="mx-auto mb-3 text-zinc-300" />
+                  <p className="font-bold text-sm">Belum ada riwayat login</p>
+                  <p className="text-xs mt-1">Riwayat login akan tercatat saat pengguna masuk ke sistem.</p>
+                </div>
+              ) : (
+                <div className="border border-zinc-200 rounded-2xl overflow-hidden shadow-xs">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500 font-bold uppercase tracking-wider text-[10px]">
+                        <tr>
+                          <th className="p-3">Waktu Login</th>
+                          <th className="p-3">Foto Wajah</th>
+                          <th className="p-3">Lokasi (Kota)</th>
+                          <th className="p-3">IP & Koordinat</th>
+                          <th className="p-3">Perangkat / OS / Browser</th>
+                          <th className="p-3">Resolusi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-100 font-medium">
+                        {sessions.map(s => (
+                          <tr key={s.id} className="hover:bg-zinc-50/30">
+                            <td className="p-3 text-zinc-600 whitespace-nowrap">
+                              <div className="font-bold text-zinc-800">{new Date(s.timestamp).toLocaleDateString('id-ID')}</div>
+                              <div className="text-[10px] text-zinc-400 mt-0.5">{new Date(s.timestamp).toLocaleTimeString('id-ID')}</div>
+                            </td>
+                            <td className="p-3">
+                              {s.photo ? (
+                                <img 
+                                  src={s.photo} 
+                                  alt="Foto Login" 
+                                  className="w-16 h-10 object-cover rounded-lg border border-zinc-200 shadow-inner cursor-zoom-in hover:scale-105 transition"
+                                  onClick={() => setSelectedImage(s.photo)}
+                                />
+                              ) : (
+                                <div className="flex flex-col items-center justify-center w-16 h-10 bg-zinc-100 rounded-lg text-zinc-400 border border-zinc-200">
+                                  <Icon name="camera-off" size={12} className="text-zinc-400" />
+                                  <span className="text-[8px] mt-0.5 font-bold uppercase tracking-wider text-zinc-400">Tidak ada</span>
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-3 font-semibold text-zinc-800 whitespace-nowrap">
+                              {s.city ? (
+                                <div className="flex items-center gap-1 text-sky-650 bg-sky-50 px-2 py-0.5 rounded-lg border border-sky-100/50 w-max">
+                                  <Icon name="map-pin" size={10} className="flex-shrink-0 text-sky-500" />
+                                  <span>{s.city}</span>
+                                </div>
+                              ) : (
+                                <span className="text-zinc-400 italic">Mendeteksi...</span>
+                              )}
+                            </td>
+                            <td className="p-3 whitespace-nowrap">
+                              <div className="font-mono text-zinc-700">{s.ip || '-'}</div>
+                              {s.latitude && s.longitude ? (
+                                <a 
+                                  href={`https://www.google.com/maps?q=${s.latitude},${s.longitude}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-0.5 text-[10px] text-emerald-650 hover:underline mt-0.5 font-semibold"
+                                >
+                                  <Icon name="map" size={10} />
+                                  <span>{Number(s.latitude).toFixed(4)}, {Number(s.longitude).toFixed(4)}</span>
+                                </a>
+                              ) : (
+                                <span className="text-[10px] text-rose-500 font-semibold block mt-0.5">GPS Gagal/Ditolak</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-zinc-600 whitespace-nowrap">
+                              <div className="font-bold text-zinc-800">{s.deviceName || '-'}</div>
+                              <div className="text-[10px] text-zinc-450 mt-0.5">{s.os || '-'} / {s.browser || '-'}</div>
+                            </td>
+                            <td className="p-3 text-zinc-500 font-mono whitespace-nowrap">{s.screenResolution || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-5 border-t border-zinc-100 flex justify-end bg-zinc-50/50 flex-shrink-0">
+              <button onClick={onClose} className="px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl text-xs font-bold transition shadow-md">Tutup</button>
+            </div>
+
+            {/* Sub-modal zoom foto */}
+            {selectedImage && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-zinc-950/70 backdrop-blur-xs animate-[fadeIn_0.2s_ease-out]" onClick={() => setSelectedImage(null)}>
+                <div className="relative max-w-md w-full bg-zinc-950 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl p-2 animate-[scaleIn_0.2s_ease-out]" onClick={e => e.stopPropagation()}>
+                  <img src={selectedImage} className="w-full h-auto rounded-2xl" alt="Foto Login Zoomed" />
+                  <button 
+                    onClick={() => setSelectedImage(null)}
+                    className="absolute top-4 right-4 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white transition"
+                  >
+                    <Icon name="x" size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       );
     }
