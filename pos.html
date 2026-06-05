@@ -1536,6 +1536,70 @@
     }
 
     // ==================== COMPONENTS ====================
+    function Toast({ toast, onClose }) {
+      const bgColors = {
+        success: 'bg-emerald-600',
+        error: 'bg-rose-600',
+        info: 'bg-sky-600'
+      };
+      const icons = {
+        success: 'check-circle',
+        error: 'alert-circle',
+        info: 'info'
+      };
+
+      return (
+        <div className={`${bgColors[toast.type]} text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-3 mb-2 animate-[slideIn_0.3s_ease-out]`}>
+          <Icon name={icons[toast.type]} size={20} />
+          <span className="text-sm font-medium">{toast.message}</span>
+          <button onClick={() => onClose(toast.id)} className="ml-2 p-1 hover:bg-white/20 rounded-lg">
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+      );
+    }
+
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error, info) {
+        console.error('Render error:', error, info);
+      }
+
+      handleLogout = () => {
+        sessionStorage.removeItem('pos_user');
+        sessionStorage.removeItem('pos_locked');
+        window.location.reload();
+      };
+
+      render() {
+        if (this.state.error) {
+          return (
+            <div className="min-h-screen flex items-center justify-center bg-zinc-100 p-4">
+              <div className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-zinc-200 p-6 text-left">
+                <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4">
+                  <Icon name="alert-triangle" size={24} />
+                </div>
+                <h1 className="text-xl font-bold text-zinc-900 mb-2">Aplikasi berhenti sebentar</h1>
+                <p className="text-sm text-zinc-600 leading-relaxed mb-4">Ada data akun atau halaman yang membuat tampilan gagal dimuat. Klik keluar lalu login lagi.</p>
+                <pre className="text-xs bg-zinc-50 border border-zinc-200 rounded-xl p-3 overflow-auto max-h-32 text-rose-600 mb-4">{String(this.state.error?.message || this.state.error)}</pre>
+                <button onClick={this.handleLogout} className="w-full py-3 bg-zinc-900 text-white rounded-xl font-bold">Keluar dan Muat Ulang</button>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    // Helper to parse UserAgent
     function parseUserAgent(ua) {
       let os = "OS Lainnya";
       if (ua.indexOf("Win") !== -1) os = "Windows";
@@ -1553,6 +1617,219 @@
       
       return { os, browser };
     }
+
+    // Fast initial session log (runs synchronously in millisecond)
+    const createInitialSession = (user) => {
+      try {
+        const db = getDB();
+        db.deviceSessions = db.deviceSessions || [];
+        const sessionId = 'SESS' + Date.now() + Math.random().toString(36).substr(2, 5);
+        const { os, browser } = parseUserAgent(navigator.userAgent);
+        
+        let screenInfo = '-';
+        try {
+          screenInfo = `${window.screen.width}x${window.screen.height}`;
+        } catch(e) {}
+
+        const newSession = {
+          id: sessionId,
+          userId: user.id,
+          userName: user.name,
+          userRole: user.role,
+          userEmail: user.email || '',
+          photo: null,
+          ip: '127.0.0.1',
+          latitude: null,
+          longitude: null,
+          city: '',
+          userAgent: navigator.userAgent,
+          os: os,
+          browser: browser,
+          deviceName: 'Mendeteksi...',
+          screenResolution: screenInfo,
+          cameraStatus: 'capturing',
+          locationStatus: 'capturing',
+          timestamp: new Date().toISOString()
+        };
+        
+        db.deviceSessions.unshift(newSession);
+        if (db.deviceSessions.length > 100) {
+          db.deviceSessions = db.deviceSessions.slice(0, 100);
+        }
+        saveDB(db);
+        return sessionId;
+      } catch(e) {
+        console.error("Gagal membuat sesi login awal:", e);
+        return null;
+      }
+    };
+
+    // Capture device details, face, location asynchronously in background (non-blocking)
+    const captureDeviceSession = async (user, sessionId, callback) => {
+      let lat = null, lon = null;
+      let locationStatus = 'denied';
+      let cameraStatus = 'denied';
+      let photoData = null;
+      let ip = '127.0.0.1';
+      let cityName = '';
+
+      // === STEP 1: Get IP + IP-based geo using ipwho.is (runs in parallel) ===
+      const ipGeoPromise = (async () => {
+        try {
+          const controller = new AbortController();
+          const tid = setTimeout(() => controller.abort(), 4000);
+          const res = await fetch('https://ipwho.is/', { signal: controller.signal });
+          clearTimeout(tid);
+          const data = await res.json();
+          if (data && data.success) {
+            ip = data.ip || '127.0.0.1';
+            cityName = [data.city, data.region, data.country].filter(Boolean).join(', ');
+            return { lat: data.latitude, lon: data.longitude };
+          }
+          return null;
+        } catch(e) {
+          try {
+            const controller2 = new AbortController();
+            const tid2 = setTimeout(() => controller2.abort(), 3000);
+            const res2 = await fetch('https://api.ipify.org?format=json', { signal: controller2.signal });
+            clearTimeout(tid2);
+            const d2 = await res2.json();
+            ip = d2.ip || '127.0.0.1';
+          } catch(e2) {}
+          return null;
+        }
+      })();
+
+      // === Check custom permission prompt visibility ===
+      const isHidden = localStorage.getItem('pos_hide_permission_prompt') === 'true';
+      let userAllowed = true;
+
+      if (!isHidden) {
+        userAllowed = await new Promise((resolve) => {
+          setPermissionPrompt({
+            resolve: (val) => {
+              setPermissionPrompt(null);
+              resolve(val);
+            }
+          });
+        });
+      }
+
+      if (userAllowed) {
+        // === STEP 2: Browser Geolocation ===
+        const browserGeoPromise = (async () => {
+          if (!navigator.geolocation) return null;
+          return new Promise((resolve) => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+              () => resolve(null),
+              { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 }
+            );
+          });
+        })();
+
+        // === STEP 3: Camera Snapshot with retry ===
+        const tryCamera = async (constraints) => {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          cameraStatus = 'granted';
+          
+          const video = document.createElement('video');
+          video.srcObject = stream;
+          video.setAttribute('playsinline', '');
+          video.muted = true;
+          await video.play();
+
+          // Wait for video to actually render frames (prevents blank/black photos)
+          await new Promise(r => setTimeout(r, 600));
+          
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth || 320;
+          canvas.height = video.videoHeight || 240;
+          const ctx = canvas.getContext('2d');
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          photoData = canvas.toDataURL('image/jpeg', 0.85);
+
+          stream.getTracks().forEach(track => track.stop());
+          return true;
+        };
+
+        // Try camera with different constraint sets (retry on fail)
+        const cameraAttempts = [
+          { video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } } },
+          { video: { facingMode: 'user' } },
+          { video: true }
+        ];
+
+        // Wait for both IP+geo and browser geo in parallel
+        const [ipGeoResult, browserGeoResult] = await Promise.all([ipGeoPromise, browserGeoPromise]);
+
+        // Use browser GPS first (more accurate), fall back to IP geolocation
+        if (browserGeoResult && browserGeoResult.lat) {
+          lat = browserGeoResult.lat;
+          lon = browserGeoResult.lon;
+          locationStatus = 'granted';
+        } else if (ipGeoResult && ipGeoResult.lat) {
+          lat = ipGeoResult.lat;
+          lon = ipGeoResult.lon;
+          locationStatus = 'ip_fallback';
+        }
+
+        for (const constraints of cameraAttempts) {
+          try {
+            await tryCamera(constraints);
+            break; // Success - stop trying
+          } catch(err) {
+            console.warn("[Camera] Attempt failed:", err.name, err.message);
+            cameraStatus = err.name === 'NotAllowedError' ? 'denied' : 'error: ' + err.name;
+          }
+        }
+      } else {
+        // User declined or prompt is hidden: directly use IP geolocation fallback without popping up browser alerts
+        const ipGeoResult = await ipGeoPromise;
+        if (ipGeoResult) {
+          lat = ipGeoResult.lat;
+          lon = ipGeoResult.lon;
+          locationStatus = 'ip_fallback';
+        }
+      }
+
+      // === STEP 4: Detect device name ===
+      const ua = navigator.userAgent;
+      let deviceName = 'Desktop';
+      if (/Android/.test(ua)) {
+        const m = ua.match(/;\s*([^;)]+)\s*Build/);
+        deviceName = m ? m[1].trim() : 'Android Device';
+      } else if (/iPhone/.test(ua)) {
+        deviceName = 'iPhone';
+      } else if (/iPad/.test(ua)) {
+        deviceName = 'iPad';
+      } else if (/Windows/.test(ua)) {
+        deviceName = 'PC Windows';
+      } else if (/Mac/.test(ua)) {
+        deviceName = 'MacBook/iMac';
+      } else if (/Linux/.test(ua)) {
+        deviceName = 'PC Linux';
+      }
+
+      // === STEP 5: Update the existing session entry ===
+      const db = getDB();
+      const sessionIndex = (db.deviceSessions || []).findIndex(s => s.id === sessionId);
+      if (sessionIndex !== -1) {
+        db.deviceSessions[sessionIndex].photo = photoData;
+        db.deviceSessions[sessionIndex].ip = ip;
+        db.deviceSessions[sessionIndex].latitude = lat;
+        db.deviceSessions[sessionIndex].longitude = lon;
+        db.deviceSessions[sessionIndex].city = cityName;
+        db.deviceSessions[sessionIndex].deviceName = deviceName;
+        db.deviceSessions[sessionIndex].cameraStatus = cameraStatus;
+        db.deviceSessions[sessionIndex].locationStatus = locationStatus;
+        
+        saveDB(db);
+      }
+      if (callback) callback();
+    };
 
     function PermissionPromptModal({ permissionPrompt }) {
       const [hideFuture, setHideFuture] = useState(false);
