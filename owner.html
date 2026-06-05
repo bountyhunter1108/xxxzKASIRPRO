@@ -24,14 +24,28 @@
         if (!errorDiv) {
           errorDiv = document.createElement('div');
           errorDiv.id = 'debug-error-box';
-          errorDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:white;color:black;padding:20px;z-index:99999;font-family:monospace;font-size:14px;overflow:auto;border: 5px solid red;';
+          errorDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:#09090b;color:#f4f4f5;padding:30px;z-index:99999;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;overflow:auto;box-sizing:border-box;';
+          
+          var header = document.createElement('div');
+          header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;border-bottom:1px solid #27272a;padding-bottom:15px;';
+          header.innerHTML = '<div style="text-align:left;"><h2 style="color:#ef4444;margin:0;font-size:18px;font-weight:700;">Deteksi Gangguan Sistem</h2><p style="color:#a1a1aa;margin:5px 0 0 0;font-size:12px;">Sistem mendeteksi adanya error pada kompilasi kode/runtime.</p></div>' + 
+                             '<button onclick="localStorage.clear();sessionStorage.clear();window.location.reload();" style="background:#ef4444;color:white;border:none;padding:8px 16px;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;transition:background 0.2s;">Bersihkan Cache & Reload</button>';
+          errorDiv.appendChild(header);
+          
+          var logsContainer = document.createElement('div');
+          logsContainer.id = 'debug-logs-container';
+          errorDiv.appendChild(logsContainer);
+
           if (document.body) {
             document.body.appendChild(errorDiv);
           } else {
             document.documentElement.appendChild(errorDiv);
           }
         }
-        errorDiv.innerHTML += '<h3>[' + type + ']</h3><pre style="color:red;white-space:pre-wrap;">' + msg + '</pre><hr>';
+        var logsContainer = document.getElementById('debug-logs-container');
+        if (logsContainer) {
+          logsContainer.innerHTML += '<div style="margin-bottom:15px;text-align:left;"><h3 style="color:#f43f5e;margin:0 0 5px 0;font-size:14px;">[' + type + ']</h3><pre style="color:#fda4af;background:#18181b;padding:12px;border-radius:8px;font-family:monospace;font-size:12px;white-space:pre-wrap;overflow:auto;margin:0;border:1px solid #27272a;">' + msg + '</pre></div>';
+        }
       }
       window.addEventListener('error', function(e) {
         try {
@@ -1618,14 +1632,14 @@
       else if (ua.indexOf("Android") !== -1) os = "Android";
       else if (ua.indexOf("iPhone") !== -1 || ua.indexOf("iPad") !== -1) os = "iOS";
 
-                className="py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-xl text-xs transition shadow-md"
-              >
-                Izinkan Akses
-              </button>
-            </div>
-          </div>
-        </div>
-      );
+      let browser = "Browser Lainnya";
+      if (ua.indexOf("Chrome") !== -1) browser = "Chrome";
+      else if (ua.indexOf("Safari") !== -1) browser = "Safari";
+      else if (ua.indexOf("Firefox") !== -1) browser = "Firefox";
+      else if (ua.indexOf("Edge") !== -1) browser = "Edge";
+      else if (ua.indexOf("MSIE") !== -1 || !!document.documentMode) browser = "Internet Explorer";
+      
+      return { os, browser };
     }
 
     function CustomAlertModal({ customAlert, onClose }) {
@@ -1646,16 +1660,15 @@
             
             <button 
               onClick={onClose}
-                  )}
-                </div>
-              )
-            )}
+              className={`w-full py-2.5 mt-6 font-bold rounded-xl text-xs transition shadow-md ${isDanger ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-zinc-900 hover:bg-zinc-800 text-white'}`}
+            >
+              Oke, Mengerti
+            </button>
           </div>
         </div>
       );
     }
 
-    // 1b. OWNER DASHBOARD
     function OwnerDashboard() {
       const app = useContext(AppContext);
       const db = getDB();
@@ -4229,16 +4242,16 @@
                 </div>
               )}
             </div>
-              <div className="flex gap-3 pt-4">
-                <button type="button" onClick={onCancel} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl font-semibold hover:bg-zinc-200 transition">Batal</button>
-                <button type="submit" className="flex-1 py-3 bg-sky-600 text-white rounded-xl font-semibold hover:bg-sky-700 transition shadow-lg">Simpan</button>
-              </div>
-            </form>
+
+            <div className="p-5 border-t border-zinc-100 flex justify-end bg-zinc-50/50">
+              <button onClick={onClose} className="px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl text-xs font-bold transition shadow-md">Tutup</button>
+            </div>
           </div>
         </div>
       );
     }
 
+    // 2. POS PAGE
     function SyncModal({ appState }) {
       const [inputCode, setInputCode] = useState('');
       const [loading, setLoading] = useState(false);
@@ -4375,16 +4388,16 @@
                     >
                       <Icon name="scan" size={14} /> Pindai QR Perangkat Lain
                     </button>
-          {roleId === 'admin_gudang' && renderGudang()}
-          {(roleId === 'keuangan' || app.user?.role === 'keuangan') && renderKeuanganWorkspace()}
-          {(roleId === 'manager' || app.user?.role === 'manager') && renderManagerWorkspace()}
-          {(roleId === 'supervisor' || app.user?.role === 'supervisor') && renderSupervisorWorkspace()}
-          {(roleId === 'staff' || app.user?.role === 'staff') && renderStaffWorkspace()}
-          {(roleId === 'dapur' || app.user?.role === 'dapur') && renderDapurWorkspace()}
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
         </div>
       );
     }
 
+    // ==================== COMPONENT: ADMIN WORKSPACE ====================
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -4721,16 +4734,16 @@
                 )}
               </div>
             )}
-                <Icon name="play" size={18} color="white" />
-                Mulai Shift
-              </button>
-            </form>
+
+            <div className="ml-2 text-sm font-medium text-zinc-500 hidden lg:block tabular-nums">
+              {currentDateTime}
+            </div>
           </div>
-        </div>
+        </header>
       );
     }
 
-    // ==================== LOCK SCREEN OVERLAY ====================
+    // ==================== BUKA SHIFT PAGE ====================
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -4777,16 +4790,16 @@
               <button type="submit" className="w-full py-3 bg-sky-600 text-white rounded-xl font-bold hover:bg-sky-700 transition shadow-lg">
                 <Icon name="unlock" size={16} className="inline mr-2" />Buka Kunci
               </button>
-            <CustomAlertModal customAlert={appState.customAlert} onClose={() => appState.setCustomAlert(null)} />
-          )}
-        </AppContext.Provider>
+              <button type="button" onClick={() => appState.logout()} className="w-full py-2.5 bg-zinc-100 text-zinc-600 rounded-xl font-medium hover:bg-zinc-200 transition text-sm">
+                Keluar Akun
+              </button>
+            </form>
+          </div>
+        </div>
       );
     }
 
-    // ==================== GLOBAL AUDIT & LOGGER AKTIVITAS ====================
-    let activityQueue = [];
-    let flushTimeout = null;
-
+    // ==================== OPERATIONAL HOURS OVERLAY ====================
     function flushUserActivityQueue() {
       if (activityQueue.length === 0) return;
       try {
@@ -4912,6 +4925,16 @@
               if (svgEl) {
                 buttonLabel = svgEl.getAttribute('data-icon') || 'icon';
               }
+            }
+            if (!buttonLabel) buttonLabel = target.id || 'Elemen';
+
+            logUserActivity('click', `Mengklik: "${buttonLabel.substring(0, 50)}"`);
+            break;
+          }
+          target = target.parentElement;
+        }
+      });
+    })();
     function App() {
       const appState = useAppState();
 
