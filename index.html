@@ -1574,6 +1574,16 @@
       }
 
       handleLogout = () => {
+        try {
+          localStorage.removeItem('pos_compiled_js');
+          localStorage.removeItem('pos_compiled_js_hash');
+          localStorage.removeItem('kasir_compiled_js');
+          localStorage.removeItem('kasir_compiled_js_hash');
+          localStorage.removeItem('owner_compiled_js');
+          localStorage.removeItem('owner_compiled_js_hash');
+          localStorage.removeItem('admin_compiled_js');
+          localStorage.removeItem('admin_compiled_js_hash');
+        } catch (e) {}
         sessionStorage.removeItem('pos_user');
         sessionStorage.removeItem('pos_locked');
         window.location.reload();
@@ -2207,16 +2217,6 @@
                       {ownerLoading ? 'Verifikasi...' : 'Masuk'}
                     </button>
                   </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-
-        </div>
-      );
-    }
-
     function App() {
       const appState = useAppState();
 
@@ -2264,29 +2264,6 @@
       );
     }
 
-    class ErrorBoundary extends React.Component {
-      constructor(props) {
-        super(props);
-        this.state = { hasError: false, error: null };
-      }
-      static getDerivedStateFromError(error) {
-        return { hasError: true, error };
-      }
-      render() {
-        if (this.state.hasError) {
-          return (
-            <div className="min-h-screen flex items-center justify-center bg-zinc-950 text-white p-6">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 max-w-md w-full text-center">
-                <h2 className="text-lg font-bold text-rose-500 mb-2">Terjadi Kesalahan Sistem</h2>
-                <pre className="text-xs text-zinc-400 bg-black/40 p-4 rounded-xl overflow-auto text-left max-h-[150px] mb-4">{this.state.error ? this.state.error.toString() : ''}</pre>
-                <button onClick={() => { localStorage.removeItem('pos_compiled_js'); window.location.reload(); }} className="px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded-xl text-xs font-semibold transition">Muat Ulang Aplikasi</button>
-              </div>
-            </div>
-          );
-        }
-        return this.props.children;
-      }
-    }
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<ErrorBoundary><App /></ErrorBoundary>);

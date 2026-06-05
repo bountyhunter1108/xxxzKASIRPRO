@@ -1574,6 +1574,16 @@
       }
 
       handleLogout = () => {
+        try {
+          localStorage.removeItem('pos_compiled_js');
+          localStorage.removeItem('pos_compiled_js_hash');
+          localStorage.removeItem('kasir_compiled_js');
+          localStorage.removeItem('kasir_compiled_js_hash');
+          localStorage.removeItem('owner_compiled_js');
+          localStorage.removeItem('owner_compiled_js_hash');
+          localStorage.removeItem('admin_compiled_js');
+          localStorage.removeItem('admin_compiled_js_hash');
+        } catch (e) {}
         sessionStorage.removeItem('pos_user');
         sessionStorage.removeItem('pos_locked');
         window.location.reload();
@@ -1608,14 +1618,14 @@
       else if (ua.indexOf("Android") !== -1) os = "Android";
       else if (ua.indexOf("iPhone") !== -1 || ua.indexOf("iPad") !== -1) os = "iOS";
 
-      let browser = "Browser Lainnya";
-      if (ua.indexOf("Chrome") !== -1) browser = "Chrome";
-      else if (ua.indexOf("Safari") !== -1) browser = "Safari";
-      else if (ua.indexOf("Firefox") !== -1) browser = "Firefox";
-      else if (ua.indexOf("Edge") !== -1) browser = "Edge";
-      else if (ua.indexOf("MSIE") !== -1 || !!document.documentMode) browser = "Internet Explorer";
-      
-      return { os, browser };
+                className="py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-xl text-xs transition shadow-md"
+              >
+                Izinkan Akses
+              </button>
+            </div>
+          </div>
+        </div>
+      );
     }
 
     function CustomAlertModal({ customAlert, onClose }) {
@@ -1636,16 +1646,16 @@
             
             <button 
               onClick={onClose}
-              className={`w-full py-2.5 mt-6 font-bold rounded-xl text-xs transition shadow-md ${isDanger ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-zinc-900 hover:bg-zinc-800 text-white'}`}
-            >
-              Oke, Mengerti
-            </button>
+                ))}
+                {categories.length === 0 && <div className="p-6 text-center text-zinc-400 text-sm">Belum ada kategori</div>}
+              </div>
+            </div>
           </div>
         </div>
       );
     }
 
-    // 1. LOGIN PAGE
+    // 3. PRODUCTS PAGE
     function ProductsPage() {
       const app = useContext(AppContext);
       const [products, setProducts] = useState([]);
@@ -2369,13 +2379,13 @@
                 <span className="text-sm font-semibold text-zinc-700">Harga diisi manual saat transaksi</span>
               </label>
             </div>
+                className="flex-1 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-xl text-xs transition"
+              >
+                Kirim Pengajuan
+              </button>
+            </div>
           </div>
-
-          <div className="flex gap-3 pt-4 border-t border-zinc-100">
-            <button type="button" onClick={onCancel} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl font-semibold hover:bg-zinc-200 transition">Batal</button>
-            <button type="submit" className="flex-1 py-3 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition shadow-lg">Simpan</button>
-          </div>
-        </form>
+        </div>
       );
     }
 
@@ -3229,8 +3239,7 @@
                 <input type="number" value={actualCash} onChange={e => setActualCash(e.target.value)} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:border-sky-500 text-sm font-medium text-zinc-800" min="0" required />
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={onCancel} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl font-semibold hover:bg-zinc-200 transition">Batal</button>
-                <button type="submit" className="flex-1 py-3 bg-sky-600 text-white rounded-xl font-semibold hover:bg-sky-700 transition shadow-lg">Simpan</button>
+                </button>
               </div>
             </form>
           </div>
@@ -3238,7 +3247,8 @@
       );
     }
 
-    // ==================== TUTUP SHIFT MODAL ====================
+
+    // 5. USERS PAGE
     function UsersPage() {
       const app = useContext(AppContext);
       const [showForm, setShowForm] = useState(false);
@@ -4498,12 +4508,12 @@
                     <button type="button" onClick={() => setShowRejectModal(null)} className="flex-1 py-2.5 bg-zinc-100 text-zinc-700 rounded-xl text-xs font-bold hover:bg-zinc-200 transition">Batal</button>
                     <button type="submit" className="flex-1 py-2.5 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 transition shadow-md">
                       Tolak Pengajuan
-                    </button>
-                  </div>
-                </form>
+                  <span>Unggah File Gambar / Bukti Scan</span>
+                  <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
+                </label>
               </div>
             </div>
-          )}
+          </div>
         </div>
       );
     }
@@ -11517,16 +11527,16 @@
                 )}
               </div>
             )}
-
-            <div className="ml-2 text-sm font-medium text-zinc-500 hidden lg:block tabular-nums">
-              {currentDateTime}
-            </div>
+                <Icon name="play" size={18} color="white" />
+                Mulai Shift
+              </button>
+            </form>
           </div>
-        </header>
+        </div>
       );
     }
 
-    // ==================== BUKA SHIFT PAGE ====================
+    // ==================== LOCK SCREEN OVERLAY ====================
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -11573,16 +11583,16 @@
               <button type="submit" className="w-full py-3 bg-sky-600 text-white rounded-xl font-bold hover:bg-sky-700 transition shadow-lg">
                 <Icon name="unlock" size={16} className="inline mr-2" />Buka Kunci
               </button>
-              <button type="button" onClick={() => appState.logout()} className="w-full py-2.5 bg-zinc-100 text-zinc-600 rounded-xl font-medium hover:bg-zinc-200 transition text-sm">
-                Keluar Akun
-              </button>
-            </form>
-          </div>
-        </div>
+            <CustomAlertModal customAlert={appState.customAlert} onClose={() => appState.setCustomAlert(null)} />
+          )}
+        </AppContext.Provider>
       );
     }
 
-    // ==================== OPERATIONAL HOURS OVERLAY ====================
+    // ==================== GLOBAL AUDIT & LOGGER AKTIVITAS ====================
+    let activityQueue = [];
+    let flushTimeout = null;
+
     function flushUserActivityQueue() {
       if (activityQueue.length === 0) return;
       try {
@@ -11708,16 +11718,6 @@
               if (svgEl) {
                 buttonLabel = svgEl.getAttribute('data-icon') || 'icon';
               }
-            }
-            if (!buttonLabel) buttonLabel = target.id || 'Elemen';
-
-            logUserActivity('click', `Mengklik: "${buttonLabel.substring(0, 50)}"`);
-            break;
-          }
-          target = target.parentElement;
-        }
-      });
-    })();
     function App() {
       const appState = useAppState();
 
@@ -11778,29 +11778,6 @@
       );
     }
 
-    class ErrorBoundary extends React.Component {
-      constructor(props) {
-        super(props);
-        this.state = { hasError: false, error: null };
-      }
-      static getDerivedStateFromError(error) {
-        return { hasError: true, error };
-      }
-      render() {
-        if (this.state.hasError) {
-          return (
-            <div className="min-h-screen flex items-center justify-center bg-zinc-950 text-white p-6">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 max-w-md w-full text-center">
-                <h2 className="text-lg font-bold text-rose-500 mb-2">Terjadi Kesalahan Sistem</h2>
-                <pre className="text-xs text-zinc-400 bg-black/40 p-4 rounded-xl overflow-auto text-left max-h-[150px] mb-4">{this.state.error ? this.state.error.toString() : ''}</pre>
-                <button onClick={() => { localStorage.removeItem('admin_compiled_js'); window.location.reload(); }} className="px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded-xl text-xs font-semibold transition">Muat Ulang Halaman</button>
-              </div>
-            </div>
-          );
-        }
-        return this.props.children;
-      }
-    }
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<ErrorBoundary><App /></ErrorBoundary>);

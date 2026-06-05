@@ -1,4 +1,4 @@
-﻿    const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
+    const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
 
     // ==================== ICONS COMPONENT ====================
     // Komponen aman untuk me-render Lucide icons di dalam React
@@ -1434,6 +1434,16 @@
       }
 
       handleLogout = () => {
+        try {
+          localStorage.removeItem('pos_compiled_js');
+          localStorage.removeItem('pos_compiled_js_hash');
+          localStorage.removeItem('kasir_compiled_js');
+          localStorage.removeItem('kasir_compiled_js_hash');
+          localStorage.removeItem('owner_compiled_js');
+          localStorage.removeItem('owner_compiled_js_hash');
+          localStorage.removeItem('admin_compiled_js');
+          localStorage.removeItem('admin_compiled_js_hash');
+        } catch (e) {}
         sessionStorage.removeItem('pos_user');
         sessionStorage.removeItem('pos_locked');
         window.location.reload();
