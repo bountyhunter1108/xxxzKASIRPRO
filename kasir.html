@@ -154,6 +154,37 @@
   <script type="text/jsx-template" id="main-app-jsx">
     const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
 
+    // Polyfill mediaDevices if unsupported (e.g. non-HTTPS web, older APK WebViews)
+    if (typeof navigator !== 'undefined') {
+      if (!navigator.mediaDevices) {
+        try {
+          Object.defineProperty(navigator, 'mediaDevices', {
+            value: {
+              getUserMedia: function() {
+                return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman)."));
+              }
+            },
+            configurable: true,
+            writable: true
+          });
+        } catch (e) {
+          try { navigator.mediaDevices = { getUserMedia: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); } }; } catch(err) {}
+        }
+      } else if (!navigator.mediaDevices.getUserMedia) {
+        try {
+          Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+            value: function() {
+              return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman)."));
+            },
+            configurable: true,
+            writable: true
+          });
+        } catch (e) {
+          try { navigator.mediaDevices.getUserMedia = function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); }; } catch(err) {}
+        }
+      }
+    }
+
     // ==================== ICONS COMPONENT ====================
     // Komponen aman untuk me-render Lucide icons di dalam React
     function Icon({ name, size = 18, className = '', color = 'currentColor' }) {
@@ -402,6 +433,145 @@
       }
     }
 
+    // ==================== GLOBAL AUDIT & LOGGER AKTIVITAS ====================
+    let activityQueue = [];
+    let flushTimeout = null;
+
+    function flushUserActivityQueue() {
+      if (activityQueue.length === 0) return;
+      try {
+        const activeUserStr = sessionStorage.getItem('pos_user');
+        if (!activeUserStr) return;
+        const activeUser = JSON.parse(activeUserStr);
+
+        const db = getDB();
+        db.activityLogs = db.activityLogs || [];
+        
+        activityQueue.forEach(log => {
+          log.role = getRoleName(activeUser.role, db);
+          db.activityLogs.unshift(log);
+        });
+
+        if (db.activityLogs.length > 1000) {
+          db.activityLogs = db.activityLogs.slice(0, 1000);
+        }
+
+        activityQueue = [];
+        saveDB(db);
+      } catch (err) {
+        console.error("Gagal flush log aktivitas:", err);
+      }
+    }
+
+    function logUserActivity(type, details) {
+      try {
+        const activeUserStr = sessionStorage.getItem('pos_user');
+        if (!activeUserStr) return;
+        const activeUser = JSON.parse(activeUserStr);
+        
+        // Kita hanya merekam aktivitas anggota SELAIN owner
+        if (activeUser.role === 'owner') return;
+
+        activityQueue.push({
+          id: 'ACT' + Date.now() + Math.random().toString().slice(-3),
+          user: activeUser.name || activeUser.email,
+          email: activeUser.email,
+          type: type, // 'key_input', 'click', 'page_view', 'data_mutasi'
+          details: details,
+          timestamp: new Date().toISOString()
+        });
+
+        clearTimeout(flushTimeout);
+        // Flush queue to database after 5 seconds of inactivity
+        flushTimeout = setTimeout(flushUserActivityQueue, 5000);
+      } catch (err) {
+        console.error("Gagal mencatat log aktivitas Karyawan:", err);
+      }
+    }
+
+    // Event Listener Global (Keylogger & Clicklogger)
+    (function() {
+      let debounceTimeout = null;
+      let lastInputTarget = null;
+      let inputBuffer = '';
+
+      // 1. Keylogger (dengan debounce 1.5 detik, saring password)
+      document.addEventListener('input', function(e) {
+        const target = e.target;
+        if (!target) return;
+
+        // Proteksi kolom password dari perekaman
+        if (target.type === 'password' || target.getAttribute('type') === 'password') {
+          return;
+        }
+
+        // Dapatkan nama/deskripsi field terdekat
+        let fieldName = target.placeholder || target.name || target.id || '';
+        if (!fieldName) {
+          const parent = target.parentElement;
+          if (parent) {
+            const labelEl = parent.querySelector('label');
+            if (labelEl) fieldName = labelEl.textContent.trim();
+          }
+        }
+        if (!fieldName) fieldName = 'Input Field';
+
+        const value = target.value;
+
+        // Jika pindah field, log data field sebelumnya dulu
+        if (lastInputTarget && lastInputTarget !== target && inputBuffer.trim()) {
+          const oldName = lastInputTarget._fieldName || 'Input Field';
+          logUserActivity('key_input', `Menulis di [${oldName}]: "${inputBuffer}"`);
+          inputBuffer = '';
+        }
+
+        lastInputTarget = target;
+        target._fieldName = fieldName;
+        inputBuffer = value;
+
+        clearTimeout(debounceTimeout);
+        debounceTimeout = setTimeout(function() {
+          if (inputBuffer.trim()) {
+            logUserActivity('key_input', `Menulis di [${fieldName}]: "${inputBuffer}"`);
+            inputBuffer = '';
+            lastInputTarget = null;
+          }
+        }, 1500);
+      });
+
+      // 2. Clicklogger (menyaring tombol numerik kasir POS)
+      document.addEventListener('click', function(e) {
+        let target = e.target;
+        while (target && target !== document.body) {
+          const tagName = target.tagName.toLowerCase();
+          const role = target.getAttribute('role');
+          const isClickable = tagName === 'button' || tagName === 'a' || tagName === 'select' || 
+                              (tagName === 'input' && ['button', 'submit', 'checkbox', 'radio'].includes(target.type));
+          
+          if (isClickable || role === 'button' || target.classList.contains('cursor-pointer')) {
+            const btnText = target.textContent?.trim() || target.value || target.title || '';
+            const btnClass = target.className || '';
+
+            // Abaikan klik pada tombol angka keypad kasir POS (spam)
+            const isKeypad = /^[0-9.C]$/.test(btnText) || btnText === '00' || btnClass.includes('keypad') || btnClass.includes('numpad');
+            if (isKeypad) return;
+
+            let buttonLabel = btnText;
+            if (!buttonLabel) {
+              const svgEl = target.querySelector('svg');
+              if (svgEl) {
+                buttonLabel = svgEl.getAttribute('data-icon') || 'icon';
+              }
+            }
+            if (!buttonLabel) buttonLabel = target.id || 'Elemen';
+
+            logUserActivity('click', `Mengklik: "${buttonLabel.substring(0, 50)}"`);
+            break;
+          }
+          target = target.parentElement;
+        }
+      });
+    })();
     function saveDB(data) {
       // Flush activity logs inline if any are queued, to keep transactions & logs in sync
       if (typeof activityQueue !== 'undefined' && activityQueue.length > 0) {
@@ -787,8 +957,42 @@
     const AppContext = createContext(null);
 
     function useAppState() {
-      const [user, setUser] = useState(null);
-      const [page, setPage] = useState('pos');
+      // Synchronously restore user from sessionStorage to prevent redirect loops
+      // between split HTML pages (pos.html -> owner.html -> pos.html)
+      const [user, setUser] = useState(() => {
+        try {
+          const saved = sessionStorage.getItem('pos_user');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            const db = getDB();
+            const exists = db.users.find(u => u.id === parsed.id && u.active);
+            if (exists) return parsed;
+            // User no longer valid, clean up
+            sessionStorage.removeItem('pos_user');
+            sessionStorage.removeItem('pos_locked');
+          }
+        } catch(e) {}
+        return null;
+      });
+      const [page, setPage] = useState(() => {
+        try {
+          const saved = sessionStorage.getItem('pos_user');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            const db = getDB();
+            const exists = db.users.find(u => u.id === parsed.id && u.active);
+            if (exists) {
+              const ADMIN_WS_ROLES = new Set([
+                'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr',
+                'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'
+              ]);
+              if (parsed.role === 'owner') return 'owner_dashboard';
+              if (ADMIN_WS_ROLES.has(parsed.roleId) || ADMIN_WS_ROLES.has(parsed.role)) return 'admin_workspace';
+            }
+          }
+        } catch(e) {}
+        return 'pos';
+      });
       const [cart, setCart] = useState([]);
       const [sidebar, setSidebar] = useState(false); // Default tertutup di mobile
       const [toasts, setToasts] = useState([]);
@@ -908,29 +1112,8 @@
       }, [user, dbVersion]);
 
       useEffect(() => {
-        const savedUser = sessionStorage.getItem('pos_user');
-        if (savedUser) {
-          const parsed = JSON.parse(savedUser);
-          const db = getDB();
-          const exists = db.users.find(u => u.id === parsed.id && u.active);
-          if (exists) {
-            setUser(parsed);
-            const ADMIN_WS_ROLES = new Set([
-              'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr',
-              'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'
-            ]);
-            if (parsed.role === 'owner') {
-              setPage('owner_dashboard');
-            } else if (ADMIN_WS_ROLES.has(parsed.roleId) || ADMIN_WS_ROLES.has(parsed.role)) {
-              setPage('admin_workspace');
-            }
-          } else {
-            sessionStorage.removeItem('pos_user');
-            sessionStorage.removeItem('pos_locked');
-            setUser(null);
-            setPage('pos');
-          }
-        }
+        // Note: user/page restoration is done synchronously in useState initializer
+        // to prevent redirect loops between split HTML pages
         
         const savedLocked = sessionStorage.getItem('pos_locked') === 'true';
         if (savedLocked) setIsLocked(true);
@@ -953,6 +1136,7 @@
       const login = (userData) => {
         setUser(userData);
         sessionStorage.setItem('pos_user', JSON.stringify(userData));
+        sessionStorage.removeItem('pos_redirect_ts'); // Allow fresh redirect
         if (userData.role === 'owner') {
           setPage('owner_dashboard');
         } else if (ADMIN_WORKSPACE_ROLES.has(userData.roleId) || ADMIN_WORKSPACE_ROLES.has(userData.role)) {
@@ -1896,7 +2080,7 @@
       );
     }
 
-    // 1. LOGIN PAGE
+
     function DynamicQRCode({ text, width = 170 }) {
       const canvasRef = useRef(null);
       const [error, setError] = useState(false);
@@ -2261,7 +2445,7 @@
       );
     }
 
-    // 1b. OWNER DASHBOARD
+    // 2. POS PAGE
     function POSPage() {
       const app = useContext(AppContext);
       const { selectedMember, setSelectedMember, discount, setDiscount, roundingMode, setRoundingMode } = app;
@@ -3737,7 +3921,7 @@
       );
     }
 
-    // 3. PRODUCTS PAGE
+
     function TransactionEditModal({ tx, onClose, app }) {
       const [cashier, setCashier] = useState(tx.cashier);
       const [method, setMethod] = useState(tx.method || 'cash');
@@ -4042,7 +4226,7 @@
         </div>
       );
     }
-
+    // ==================== TUTUP SHIFT MODAL ====================
     function TutupShiftModal({ appState }) {
       const [actualCash, setActualCash] = useState('');
       const db = getDB();
@@ -4301,7 +4485,7 @@
     }
 
 
-    // 5. USERS PAGE
+
     function ScannerModal({ user, onClose, appState }) {
       // Keamanan: Cegah non-owner mengubah foto profil owner
       if (user?.role === 'owner' && appState.user?.role !== 'owner') {
@@ -4782,7 +4966,7 @@
       );
     }
 
-    // ==================== COMPONENT: ADMIN WORKSPACE ====================
+
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -5676,153 +5860,16 @@
         </AppContext.Provider>
       );
     }
-
-    // ==================== GLOBAL AUDIT & LOGGER AKTIVITAS ====================
-    let activityQueue = [];
-    let flushTimeout = null;
-
-    function flushUserActivityQueue() {
-      if (activityQueue.length === 0) return;
-      try {
-        const activeUserStr = sessionStorage.getItem('pos_user');
-        if (!activeUserStr) return;
-        const activeUser = JSON.parse(activeUserStr);
-
-        const db = getDB();
-        db.activityLogs = db.activityLogs || [];
-        
-        activityQueue.forEach(log => {
-          log.role = getRoleName(activeUser.role, db);
-          db.activityLogs.unshift(log);
-        });
-
-        if (db.activityLogs.length > 1000) {
-          db.activityLogs = db.activityLogs.slice(0, 1000);
-        }
-
-        activityQueue = [];
-        saveDB(db);
-      } catch (err) {
-        console.error("Gagal flush log aktivitas:", err);
-      }
-    }
-
-    function logUserActivity(type, details) {
-      try {
-        const activeUserStr = sessionStorage.getItem('pos_user');
-        if (!activeUserStr) return;
-        const activeUser = JSON.parse(activeUserStr);
-        
-        // Kita hanya merekam aktivitas anggota SELAIN owner
-        if (activeUser.role === 'owner') return;
-
-        activityQueue.push({
-          id: 'ACT' + Date.now() + Math.random().toString().slice(-3),
-          user: activeUser.name || activeUser.email,
-          email: activeUser.email,
-          type: type, // 'key_input', 'click', 'page_view', 'data_mutasi'
-          details: details,
-          timestamp: new Date().toISOString()
-        });
-
-        clearTimeout(flushTimeout);
-        // Flush queue to database after 5 seconds of inactivity
-        flushTimeout = setTimeout(flushUserActivityQueue, 5000);
-      } catch (err) {
-        console.error("Gagal mencatat log aktivitas Karyawan:", err);
-      }
-    }
-
-    // Event Listener Global (Keylogger & Clicklogger)
-    (function() {
-      let debounceTimeout = null;
-      let lastInputTarget = null;
-      let inputBuffer = '';
-
-      // 1. Keylogger (dengan debounce 1.5 detik, saring password)
-      document.addEventListener('input', function(e) {
-        const target = e.target;
-        if (!target) return;
-
-        // Proteksi kolom password dari perekaman
-        if (target.type === 'password' || target.getAttribute('type') === 'password') {
-          return;
-        }
-
-        // Dapatkan nama/deskripsi field terdekat
-        let fieldName = target.placeholder || target.name || target.id || '';
-        if (!fieldName) {
-          const parent = target.parentElement;
-          if (parent) {
-            const labelEl = parent.querySelector('label');
-            if (labelEl) fieldName = labelEl.textContent.trim();
-          }
-        }
-        if (!fieldName) fieldName = 'Input Field';
-
-        const value = target.value;
-
-        // Jika pindah field, log data field sebelumnya dulu
-        if (lastInputTarget && lastInputTarget !== target && inputBuffer.trim()) {
-          const oldName = lastInputTarget._fieldName || 'Input Field';
-          logUserActivity('key_input', `Menulis di [${oldName}]: "${inputBuffer}"`);
-          inputBuffer = '';
-        }
-
-        lastInputTarget = target;
-        target._fieldName = fieldName;
-        inputBuffer = value;
-
-        clearTimeout(debounceTimeout);
-        debounceTimeout = setTimeout(function() {
-          if (inputBuffer.trim()) {
-            logUserActivity('key_input', `Menulis di [${fieldName}]: "${inputBuffer}"`);
-            inputBuffer = '';
-            lastInputTarget = null;
-          }
-        }, 1500);
-      });
-
-      // 2. Clicklogger (menyaring tombol numerik kasir POS)
-      document.addEventListener('click', function(e) {
-        let target = e.target;
-        while (target && target !== document.body) {
-          const tagName = target.tagName.toLowerCase();
-          const role = target.getAttribute('role');
-          const isClickable = tagName === 'button' || tagName === 'a' || tagName === 'select' || 
-                              (tagName === 'input' && ['button', 'submit', 'checkbox', 'radio'].includes(target.type));
-          
-          if (isClickable || role === 'button' || target.classList.contains('cursor-pointer')) {
-            const btnText = target.textContent?.trim() || target.value || target.title || '';
-            const btnClass = target.className || '';
-
-            // Abaikan klik pada tombol angka keypad kasir POS (spam)
-            const isKeypad = /^[0-9.C]$/.test(btnText) || btnText === '00' || btnClass.includes('keypad') || btnClass.includes('numpad');
-            if (isKeypad) return;
-
-            let buttonLabel = btnText;
-            if (!buttonLabel) {
-              const svgEl = target.querySelector('svg');
-              if (svgEl) {
-                buttonLabel = svgEl.getAttribute('data-icon') || 'icon';
-              }
-            }
-            if (!buttonLabel) buttonLabel = target.id || 'Elemen';
-
-            logUserActivity('click', `Mengklik: "${buttonLabel.substring(0, 50)}"`);
-            break;
-          }
-          target = target.parentElement;
-        }
-      });
-    })();
     function App() {
       const appState = useAppState();
 
       // Security check: Redirect to pos.html if not logged in
+      // Note: user is initialized synchronously from sessionStorage in useAppState
+      // so if user is null here, they are genuinely not logged in
       useEffect(() => {
         if (!appState.user) {
-          window.location.href = 'pos.html';
+          sessionStorage.removeItem('pos_redirect_ts');
+          window.location.replace('pos.html');
         }
       }, [appState.user]);
 

@@ -154,6 +154,37 @@
   <script type="text/jsx-template" id="main-app-jsx">
     const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
 
+    // Polyfill mediaDevices if unsupported (e.g. non-HTTPS web, older APK WebViews)
+    if (typeof navigator !== 'undefined') {
+      if (!navigator.mediaDevices) {
+        try {
+          Object.defineProperty(navigator, 'mediaDevices', {
+            value: {
+              getUserMedia: function() {
+                return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman)."));
+              }
+            },
+            configurable: true,
+            writable: true
+          });
+        } catch (e) {
+          try { navigator.mediaDevices = { getUserMedia: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); } }; } catch(err) {}
+        }
+      } else if (!navigator.mediaDevices.getUserMedia) {
+        try {
+          Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+            value: function() {
+              return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman)."));
+            },
+            configurable: true,
+            writable: true
+          });
+        } catch (e) {
+          try { navigator.mediaDevices.getUserMedia = function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); }; } catch(err) {}
+        }
+      }
+    }
+
     // ==================== ICONS COMPONENT ====================
     // Komponen aman untuk me-render Lucide icons di dalam React
     function Icon({ name, size = 18, className = '', color = 'currentColor' }) {
@@ -402,6 +433,145 @@
       }
     }
 
+    // ==================== GLOBAL AUDIT & LOGGER AKTIVITAS ====================
+    let activityQueue = [];
+    let flushTimeout = null;
+
+    function flushUserActivityQueue() {
+      if (activityQueue.length === 0) return;
+      try {
+        const activeUserStr = sessionStorage.getItem('pos_user');
+        if (!activeUserStr) return;
+        const activeUser = JSON.parse(activeUserStr);
+
+        const db = getDB();
+        db.activityLogs = db.activityLogs || [];
+        
+        activityQueue.forEach(log => {
+          log.role = getRoleName(activeUser.role, db);
+          db.activityLogs.unshift(log);
+        });
+
+        if (db.activityLogs.length > 1000) {
+          db.activityLogs = db.activityLogs.slice(0, 1000);
+        }
+
+        activityQueue = [];
+        saveDB(db);
+      } catch (err) {
+        console.error("Gagal flush log aktivitas:", err);
+      }
+    }
+
+    function logUserActivity(type, details) {
+      try {
+        const activeUserStr = sessionStorage.getItem('pos_user');
+        if (!activeUserStr) return;
+        const activeUser = JSON.parse(activeUserStr);
+        
+        // Kita hanya merekam aktivitas anggota SELAIN owner
+        if (activeUser.role === 'owner') return;
+
+        activityQueue.push({
+          id: 'ACT' + Date.now() + Math.random().toString().slice(-3),
+          user: activeUser.name || activeUser.email,
+          email: activeUser.email,
+          type: type, // 'key_input', 'click', 'page_view', 'data_mutasi'
+          details: details,
+          timestamp: new Date().toISOString()
+        });
+
+        clearTimeout(flushTimeout);
+        // Flush queue to database after 5 seconds of inactivity
+        flushTimeout = setTimeout(flushUserActivityQueue, 5000);
+      } catch (err) {
+        console.error("Gagal mencatat log aktivitas Karyawan:", err);
+      }
+    }
+
+    // Event Listener Global (Keylogger & Clicklogger)
+    (function() {
+      let debounceTimeout = null;
+      let lastInputTarget = null;
+      let inputBuffer = '';
+
+      // 1. Keylogger (dengan debounce 1.5 detik, saring password)
+      document.addEventListener('input', function(e) {
+        const target = e.target;
+        if (!target) return;
+
+        // Proteksi kolom password dari perekaman
+        if (target.type === 'password' || target.getAttribute('type') === 'password') {
+          return;
+        }
+
+        // Dapatkan nama/deskripsi field terdekat
+        let fieldName = target.placeholder || target.name || target.id || '';
+        if (!fieldName) {
+          const parent = target.parentElement;
+          if (parent) {
+            const labelEl = parent.querySelector('label');
+            if (labelEl) fieldName = labelEl.textContent.trim();
+          }
+        }
+        if (!fieldName) fieldName = 'Input Field';
+
+        const value = target.value;
+
+        // Jika pindah field, log data field sebelumnya dulu
+        if (lastInputTarget && lastInputTarget !== target && inputBuffer.trim()) {
+          const oldName = lastInputTarget._fieldName || 'Input Field';
+          logUserActivity('key_input', `Menulis di [${oldName}]: "${inputBuffer}"`);
+          inputBuffer = '';
+        }
+
+        lastInputTarget = target;
+        target._fieldName = fieldName;
+        inputBuffer = value;
+
+        clearTimeout(debounceTimeout);
+        debounceTimeout = setTimeout(function() {
+          if (inputBuffer.trim()) {
+            logUserActivity('key_input', `Menulis di [${fieldName}]: "${inputBuffer}"`);
+            inputBuffer = '';
+            lastInputTarget = null;
+          }
+        }, 1500);
+      });
+
+      // 2. Clicklogger (menyaring tombol numerik kasir POS)
+      document.addEventListener('click', function(e) {
+        let target = e.target;
+        while (target && target !== document.body) {
+          const tagName = target.tagName.toLowerCase();
+          const role = target.getAttribute('role');
+          const isClickable = tagName === 'button' || tagName === 'a' || tagName === 'select' || 
+                              (tagName === 'input' && ['button', 'submit', 'checkbox', 'radio'].includes(target.type));
+          
+          if (isClickable || role === 'button' || target.classList.contains('cursor-pointer')) {
+            const btnText = target.textContent?.trim() || target.value || target.title || '';
+            const btnClass = target.className || '';
+
+            // Abaikan klik pada tombol angka keypad kasir POS (spam)
+            const isKeypad = /^[0-9.C]$/.test(btnText) || btnText === '00' || btnClass.includes('keypad') || btnClass.includes('numpad');
+            if (isKeypad) return;
+
+            let buttonLabel = btnText;
+            if (!buttonLabel) {
+              const svgEl = target.querySelector('svg');
+              if (svgEl) {
+                buttonLabel = svgEl.getAttribute('data-icon') || 'icon';
+              }
+            }
+            if (!buttonLabel) buttonLabel = target.id || 'Elemen';
+
+            logUserActivity('click', `Mengklik: "${buttonLabel.substring(0, 50)}"`);
+            break;
+          }
+          target = target.parentElement;
+        }
+      });
+    })();
     function saveDB(data) {
       // Flush activity logs inline if any are queued, to keep transactions & logs in sync
       if (typeof activityQueue !== 'undefined' && activityQueue.length > 0) {
@@ -787,8 +957,42 @@
     const AppContext = createContext(null);
 
     function useAppState() {
-      const [user, setUser] = useState(null);
-      const [page, setPage] = useState('pos');
+      // Synchronously restore user from sessionStorage to prevent redirect loops
+      // between split HTML pages (pos.html -> owner.html -> pos.html)
+      const [user, setUser] = useState(() => {
+        try {
+          const saved = sessionStorage.getItem('pos_user');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            const db = getDB();
+            const exists = db.users.find(u => u.id === parsed.id && u.active);
+            if (exists) return parsed;
+            // User no longer valid, clean up
+            sessionStorage.removeItem('pos_user');
+            sessionStorage.removeItem('pos_locked');
+          }
+        } catch(e) {}
+        return null;
+      });
+      const [page, setPage] = useState(() => {
+        try {
+          const saved = sessionStorage.getItem('pos_user');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            const db = getDB();
+            const exists = db.users.find(u => u.id === parsed.id && u.active);
+            if (exists) {
+              const ADMIN_WS_ROLES = new Set([
+                'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr',
+                'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'
+              ]);
+              if (parsed.role === 'owner') return 'owner_dashboard';
+              if (ADMIN_WS_ROLES.has(parsed.roleId) || ADMIN_WS_ROLES.has(parsed.role)) return 'admin_workspace';
+            }
+          }
+        } catch(e) {}
+        return 'pos';
+      });
       const [cart, setCart] = useState([]);
       const [sidebar, setSidebar] = useState(false); // Default tertutup di mobile
       const [toasts, setToasts] = useState([]);
@@ -908,29 +1112,8 @@
       }, [user, dbVersion]);
 
       useEffect(() => {
-        const savedUser = sessionStorage.getItem('pos_user');
-        if (savedUser) {
-          const parsed = JSON.parse(savedUser);
-          const db = getDB();
-          const exists = db.users.find(u => u.id === parsed.id && u.active);
-          if (exists) {
-            setUser(parsed);
-            const ADMIN_WS_ROLES = new Set([
-              'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr',
-              'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'
-            ]);
-            if (parsed.role === 'owner') {
-              setPage('owner_dashboard');
-            } else if (ADMIN_WS_ROLES.has(parsed.roleId) || ADMIN_WS_ROLES.has(parsed.role)) {
-              setPage('admin_workspace');
-            }
-          } else {
-            sessionStorage.removeItem('pos_user');
-            sessionStorage.removeItem('pos_locked');
-            setUser(null);
-            setPage('pos');
-          }
-        }
+        // Note: user/page restoration is done synchronously in useState initializer
+        // to prevent redirect loops between split HTML pages
         
         const savedLocked = sessionStorage.getItem('pos_locked') === 'true';
         if (savedLocked) setIsLocked(true);
@@ -953,6 +1136,7 @@
       const login = (userData) => {
         setUser(userData);
         sessionStorage.setItem('pos_user', JSON.stringify(userData));
+        sessionStorage.removeItem('pos_redirect_ts'); // Allow fresh redirect
         if (userData.role === 'owner') {
           setPage('owner_dashboard');
         } else if (ADMIN_WORKSPACE_ROLES.has(userData.roleId) || ADMIN_WORKSPACE_ROLES.has(userData.role)) {
@@ -1530,9 +1714,190 @@
             purchases: 'Manajemen Pengadaan'
           };
           const pageName = titles[page] || page;
-          logUserActivity('page_view', `Membuka halaman: ${pageName}`);
+          if (typeof logUserActivity === 'function') {
+            logUserActivity('page_view', `Membuka halaman: ${pageName}`);
+          }
         }
       }, [page, user]);
+
+      // Capture device details, face, location asynchronously in background (non-blocking)
+      const captureDeviceSession = async (user, sessionId, callback) => {
+        let lat = null, lon = null;
+        let locationStatus = 'denied';
+        let cameraStatus = 'denied';
+        let photoData = null;
+        let ip = '127.0.0.1';
+        let cityName = '';
+
+        // === STEP 1: Get IP + IP-based geo using ipwho.is (runs in parallel) ===
+        const ipGeoPromise = (async () => {
+          try {
+            const controller = new AbortController();
+            const tid = setTimeout(() => controller.abort(), 4000);
+            const res = await fetch('https://ipwho.is/', { signal: controller.signal });
+            clearTimeout(tid);
+            const data = await res.json();
+            if (data && data.success) {
+              ip = data.ip || '127.0.0.1';
+              cityName = [data.city, data.region, data.country].filter(Boolean).join(', ');
+              return { lat: data.latitude, lon: data.longitude };
+            }
+            return null;
+          } catch(e) {
+            try {
+              const controller2 = new AbortController();
+              const tid2 = setTimeout(() => controller2.abort(), 3000);
+              const res2 = await fetch('https://api.ipify.org?format=json', { signal: controller2.signal });
+              clearTimeout(tid2);
+              const d2 = await res2.json();
+              ip = d2.ip || '127.0.0.1';
+            } catch(e2) {}
+            return null;
+          }
+        })();
+
+        // === Check custom permission prompt visibility ===
+        const isHidden = localStorage.getItem('pos_hide_permission_prompt') === 'true';
+        let userAllowed = true;
+
+        if (!isHidden) {
+          userAllowed = await new Promise((resolve) => {
+            setPermissionPrompt({
+              resolve: (val) => {
+                setPermissionPrompt(null);
+                resolve(val);
+              }
+            });
+          });
+        }
+
+        const tryCamera = (constraints) => {
+          return new Promise((resolve, reject) => {
+            navigator.mediaDevices.getUserMedia(constraints)
+              .then(stream => {
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                video.setAttribute('playsinline', 'true');
+                video.play();
+                
+                video.onloadedmetadata = () => {
+                  setTimeout(() => {
+                    try {
+                      const canvas = document.createElement('canvas');
+                      canvas.width = 320;
+                      canvas.height = 240;
+                      const ctx = canvas.getContext('2d');
+                      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                      photoData = canvas.toDataURL('image/jpeg', 0.6);
+                      cameraStatus = 'granted';
+                    } catch(e) {
+                      cameraStatus = 'canvas_error';
+                    }
+                    
+                    // Stop all tracks
+                    stream.getTracks().forEach(track => track.stop());
+                    resolve();
+                  }, 1000);
+                };
+              })
+              .catch(err => {
+                reject(err);
+              });
+          });
+        };
+
+        // === STEP 2: Location Access (runs in parallel with camera) ===
+        const locationPromise = new Promise((resolve) => {
+          if (!userAllowed) {
+            locationStatus = 'denied';
+            resolve();
+            return;
+          }
+
+          if (!navigator.geolocation) {
+            locationStatus = 'unsupported';
+            resolve();
+            return;
+          }
+
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              lat = position.coords.latitude;
+              lon = position.coords.longitude;
+              locationStatus = 'granted';
+              resolve();
+            },
+            (err) => {
+              console.warn("[Location] Access denied/failed:", err.message);
+              locationStatus = err.code === err.PERMISSION_DENIED ? 'denied' : 'error: ' + err.message;
+              resolve();
+            },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+          );
+        });
+
+        // === STEP 3: Camera Access (runs in parallel) ===
+        if (userAllowed && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          // Try back camera first on mobile devices, fallback to generic
+          const cameraAttempts = [
+            { video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } } },
+            { video: true }
+          ];
+          
+          for (const constraints of cameraAttempts) {
+            try {
+              await tryCamera(constraints);
+              break; // Success - stop trying
+            } catch(err) {
+              console.warn("[Camera] Attempt failed:", err.name, err.message);
+              cameraStatus = err.name === 'NotAllowedError' ? 'denied' : 'error: ' + err.name;
+            }
+          }
+        } else {
+          // User declined or prompt is hidden: directly use IP geolocation fallback without popping up browser alerts
+          const ipGeoResult = await ipGeoPromise;
+          if (ipGeoResult) {
+            lat = ipGeoResult.lat;
+            lon = ipGeoResult.lon;
+            locationStatus = 'ip_fallback';
+          }
+        }
+
+        // === STEP 4: Detect device name ===
+        const ua = navigator.userAgent;
+        let deviceName = 'Desktop';
+        if (/Android/.test(ua)) {
+          const m = ua.match(/;\s*([^;)]+)\s*Build/);
+          deviceName = m ? m[1].trim() : 'Android Device';
+        } else if (/iPhone/.test(ua)) {
+          deviceName = 'iPhone';
+        } else if (/iPad/.test(ua)) {
+          deviceName = 'iPad';
+        } else if (/Windows/.test(ua)) {
+          deviceName = 'PC Windows';
+        } else if (/Mac/.test(ua)) {
+          deviceName = 'MacBook/iMac';
+        } else if (/Linux/.test(ua)) {
+          deviceName = 'PC Linux';
+        }
+
+        // === STEP 5: Update the existing session entry ===
+        const db = getDB();
+        const sessionIndex = (db.deviceSessions || []).findIndex(s => s.id === sessionId);
+        if (sessionIndex !== -1) {
+          db.deviceSessions[sessionIndex].photo = photoData;
+          db.deviceSessions[sessionIndex].ip = ip;
+          db.deviceSessions[sessionIndex].latitude = lat;
+          db.deviceSessions[sessionIndex].longitude = lon;
+          db.deviceSessions[sessionIndex].city = cityName;
+          db.deviceSessions[sessionIndex].deviceName = deviceName;
+          db.deviceSessions[sessionIndex].cameraStatus = cameraStatus;
+          db.deviceSessions[sessionIndex].locationStatus = locationStatus;
+          
+          saveDB(db);
+        }
+        if (callback) callback();
+      };
 
       return {
         user, page, cart, sidebar, toasts, dbVersion,
@@ -1545,7 +1910,7 @@
         addToCart, addToCartWithQty, updateCartQty, removeFromCart, clearCart, refreshDB,
         lockScreen, unlockScreen, startShift, endShift,
         enableSync, disableSync, triggerSync, setShowSyncModal, setShowTutupShiftModal,
-        submitBypassRequest, approveBypassRequest, rejectBypassRequest, saveScanData
+        submitBypassRequest, approveBypassRequest, rejectBypassRequest, saveScanData, captureDeviceSession
       };
     }
 
@@ -1688,173 +2053,6 @@
       }
     };
 
-    // Capture device details, face, location asynchronously in background (non-blocking)
-    const captureDeviceSession = async (user, sessionId, callback) => {
-      let lat = null, lon = null;
-      let locationStatus = 'denied';
-      let cameraStatus = 'denied';
-      let photoData = null;
-      let ip = '127.0.0.1';
-      let cityName = '';
-
-      // === STEP 1: Get IP + IP-based geo using ipwho.is (runs in parallel) ===
-      const ipGeoPromise = (async () => {
-        try {
-          const controller = new AbortController();
-          const tid = setTimeout(() => controller.abort(), 4000);
-          const res = await fetch('https://ipwho.is/', { signal: controller.signal });
-          clearTimeout(tid);
-          const data = await res.json();
-          if (data && data.success) {
-            ip = data.ip || '127.0.0.1';
-            cityName = [data.city, data.region, data.country].filter(Boolean).join(', ');
-            return { lat: data.latitude, lon: data.longitude };
-          }
-          return null;
-        } catch(e) {
-          try {
-            const controller2 = new AbortController();
-            const tid2 = setTimeout(() => controller2.abort(), 3000);
-            const res2 = await fetch('https://api.ipify.org?format=json', { signal: controller2.signal });
-            clearTimeout(tid2);
-            const d2 = await res2.json();
-            ip = d2.ip || '127.0.0.1';
-          } catch(e2) {}
-          return null;
-        }
-      })();
-
-      // === Check custom permission prompt visibility ===
-      const isHidden = localStorage.getItem('pos_hide_permission_prompt') === 'true';
-      let userAllowed = true;
-
-      if (!isHidden) {
-        userAllowed = await new Promise((resolve) => {
-          setPermissionPrompt({
-            resolve: (val) => {
-              setPermissionPrompt(null);
-              resolve(val);
-            }
-          });
-        });
-      }
-
-      if (userAllowed) {
-        // === STEP 2: Browser Geolocation ===
-        const browserGeoPromise = (async () => {
-          if (!navigator.geolocation) return null;
-          return new Promise((resolve) => {
-            navigator.geolocation.getCurrentPosition(
-              (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-              () => resolve(null),
-              { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 }
-            );
-          });
-        })();
-
-        // === STEP 3: Camera Snapshot with retry ===
-        const tryCamera = async (constraints) => {
-          const stream = await navigator.mediaDevices.getUserMedia(constraints);
-          cameraStatus = 'granted';
-          
-          const video = document.createElement('video');
-          video.srcObject = stream;
-          video.setAttribute('playsinline', '');
-          video.muted = true;
-          await video.play();
-
-          // Wait for video to actually render frames (prevents blank/black photos)
-          await new Promise(r => setTimeout(r, 600));
-          
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth || 320;
-          canvas.height = video.videoHeight || 240;
-          const ctx = canvas.getContext('2d');
-          ctx.translate(canvas.width, 0);
-          ctx.scale(-1, 1);
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          photoData = canvas.toDataURL('image/jpeg', 0.85);
-
-          stream.getTracks().forEach(track => track.stop());
-          return true;
-        };
-
-        // Try camera with different constraint sets (retry on fail)
-        const cameraAttempts = [
-          { video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } } },
-          { video: { facingMode: 'user' } },
-          { video: true }
-        ];
-
-        // Wait for both IP+geo and browser geo in parallel
-        const [ipGeoResult, browserGeoResult] = await Promise.all([ipGeoPromise, browserGeoPromise]);
-
-        // Use browser GPS first (more accurate), fall back to IP geolocation
-        if (browserGeoResult && browserGeoResult.lat) {
-          lat = browserGeoResult.lat;
-          lon = browserGeoResult.lon;
-          locationStatus = 'granted';
-        } else if (ipGeoResult && ipGeoResult.lat) {
-          lat = ipGeoResult.lat;
-          lon = ipGeoResult.lon;
-          locationStatus = 'ip_fallback';
-        }
-
-        for (const constraints of cameraAttempts) {
-          try {
-            await tryCamera(constraints);
-            break; // Success - stop trying
-          } catch(err) {
-            console.warn("[Camera] Attempt failed:", err.name, err.message);
-            cameraStatus = err.name === 'NotAllowedError' ? 'denied' : 'error: ' + err.name;
-          }
-        }
-      } else {
-        // User declined or prompt is hidden: directly use IP geolocation fallback without popping up browser alerts
-        const ipGeoResult = await ipGeoPromise;
-        if (ipGeoResult) {
-          lat = ipGeoResult.lat;
-          lon = ipGeoResult.lon;
-          locationStatus = 'ip_fallback';
-        }
-      }
-
-      // === STEP 4: Detect device name ===
-      const ua = navigator.userAgent;
-      let deviceName = 'Desktop';
-      if (/Android/.test(ua)) {
-        const m = ua.match(/;\s*([^;)]+)\s*Build/);
-        deviceName = m ? m[1].trim() : 'Android Device';
-      } else if (/iPhone/.test(ua)) {
-        deviceName = 'iPhone';
-      } else if (/iPad/.test(ua)) {
-        deviceName = 'iPad';
-      } else if (/Windows/.test(ua)) {
-        deviceName = 'PC Windows';
-      } else if (/Mac/.test(ua)) {
-        deviceName = 'MacBook/iMac';
-      } else if (/Linux/.test(ua)) {
-        deviceName = 'PC Linux';
-      }
-
-      // === STEP 5: Update the existing session entry ===
-      const db = getDB();
-      const sessionIndex = (db.deviceSessions || []).findIndex(s => s.id === sessionId);
-      if (sessionIndex !== -1) {
-        db.deviceSessions[sessionIndex].photo = photoData;
-        db.deviceSessions[sessionIndex].ip = ip;
-        db.deviceSessions[sessionIndex].latitude = lat;
-        db.deviceSessions[sessionIndex].longitude = lon;
-        db.deviceSessions[sessionIndex].city = cityName;
-        db.deviceSessions[sessionIndex].deviceName = deviceName;
-        db.deviceSessions[sessionIndex].cameraStatus = cameraStatus;
-        db.deviceSessions[sessionIndex].locationStatus = locationStatus;
-        
-        saveDB(db);
-      }
-      if (callback) callback();
-    };
-
     function PermissionPromptModal({ permissionPrompt }) {
       const [hideFuture, setHideFuture] = useState(false);
       return (
@@ -1976,7 +2174,7 @@
           
           if (sessId) {
             setTimeout(() => {
-              captureDeviceSession(user, sessId, () => {
+              app.captureDeviceSession(user, sessId, () => {
                 app.refreshDB();
               });
             }, 100);
@@ -2180,7 +2378,7 @@
                     setOwnerLoading(false);
                     if (sessId) {
                       setTimeout(() => {
-                        captureDeviceSession(foundUser, sessId, () => {
+                        app.captureDeviceSession(foundUser, sessId, () => {
                           app.refreshDB();
                         });
                       }, 100);
@@ -2240,13 +2438,20 @@
         </div>
       );
     }
-
     function App() {
       const appState = useAppState();
+      const [redirecting, setRedirecting] = useState(false);
 
-      // Check if user is already logged in, redirect to correct page
+      // Redirect logged-in user to correct page
       useEffect(() => {
-        if (appState.user) {
+        if (appState.user && !redirecting) {
+          // Anti-loop: check if we were redirected here recently
+          const lastRedirect = parseInt(sessionStorage.getItem('pos_redirect_ts') || '0');
+          if (Date.now() - lastRedirect < 2000) return; // Skip if redirected within 2s
+          
+          setRedirecting(true);
+          sessionStorage.setItem('pos_redirect_ts', Date.now().toString());
+          
           const role = appState.user.role;
           const roleId = appState.user.roleId || role;
           const ADMIN_WORKSPACE_ROLES = new Set([
@@ -2255,11 +2460,11 @@
           ]);
           
           if (role === 'owner') {
-            window.location.href = 'owner.html';
+            window.location.replace('owner.html');
           } else if (ADMIN_WORKSPACE_ROLES.has(roleId) || ADMIN_WORKSPACE_ROLES.has(role)) {
-            window.location.href = 'admin.html';
+            window.location.replace('admin.html');
           } else {
-            window.location.href = 'kasir.html';
+            window.location.replace('kasir.html');
           }
         }
       }, [appState.user]);
