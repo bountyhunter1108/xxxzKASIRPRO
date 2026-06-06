@@ -790,7 +790,7 @@
         return null;
       });
       const [page, setPage] = useState(() => {
-        try {
+        try { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const urlParams = new URLSearchParams(window.location.search); const urlPage = urlParams.get('page'); if (urlPage) return urlPage; if (file.indexOf('owner') !== -1) return 'owner_dashboard'; if (file.indexOf('admin') !== -1) return 'admin_workspace'; if (file.indexOf('kasir') !== -1) return 'pos';
           const saved = sessionStorage.getItem('pos_user');
           if (saved) {
             const parsed = JSON.parse(saved);
@@ -799,7 +799,7 @@
             if (exists) {
               const ADMIN_WS_ROLES = new Set([
                 'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr',
-                'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'
+                'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff', 'dapur'
               ]);
               if (parsed.role === 'owner') return 'owner_dashboard';
               if (ADMIN_WS_ROLES.has(parsed.roleId) || ADMIN_WS_ROLES.has(parsed.role)) return 'admin_workspace';
@@ -945,7 +945,7 @@
       // Roles that get the admin workspace (not POS/cashier screen)
       const ADMIN_WORKSPACE_ROLES = new Set([
         'admin', 'admin_operasional', 'admin_keuangan', 'admin_hr',
-        'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff'
+        'admin_marketing', 'admin_gudang', 'keuangan', 'manager', 'supervisor', 'staff', 'dapur'
       ]);
 
       const login = (userData) => {
@@ -10461,22 +10461,22 @@
         e.preventDefault();
         const selectedRole = role === 'custom' ? customRole.trim().toLowerCase() : role;
         if (!selectedRole) {
-          alert('Role wajib diisi');
+          app.setCustomAlert({ title: 'Input Tidak Valid', message: 'Role wajib diisi', type: 'warning' });
           return;
         }
         const isEditingSelfOwner = user && user.role === 'owner';
         const cleanRole = selectedRole.toLowerCase().replace(/[^a-z_]/g, '');
         const isTargetingOwner = cleanRole === 'owner' || cleanRole === 'pemilik' || cleanRole.includes('owner') || cleanRole.includes('pemilik');
         
-        if (isTargetingOwner && !isEditingSelfOwner) {
-          logAuditAction('âš ï¸ PELANGGARAN KEAMANAN', `Percobaan pembuatan/perubahan akun (${email}) dengan role Owner oleh ${app.user?.name || 'Tidak Dikenal'} (${app.user?.role}). Aksi berhasil dicegah.`, app.user);
+        if (isTargetingOwner && app.user?.role !== 'owner') {
+          logAuditAction('⚠️ PELANGGARAN KEAMANAN', `Percobaan pembuatan/perubahan akun (${email}) dengan role Owner oleh ${app.user?.name || 'Tidak Dikenal'} (${app.user?.role}). Aksi berhasil dicegah.`, app.user);
           
           const db = getDB();
           db.ownerNotifications = db.ownerNotifications || [];
           db.ownerNotifications.unshift({
             id: 'ON' + Date.now() + Math.random().toString().slice(-3),
             type: 'security_alert',
-            title: 'âš ï¸ PELANGGARAN KEAMANAN TERDETEKSI',
+            title: '⚠️ PELANGGARAN KEAMANAN TERDETEKSI',
             message: `User '${app.user?.name || 'Tidak Dikenal'}' (${app.user?.email || ''}) mencoba mendaftarkan/mengubah akun menjadi role Owner (Email Target: '${email}'). Tindakan tersebut berhasil digagalkan secara otomatis.`,
             timestamp: new Date().toISOString(),
             unread: true
@@ -10484,7 +10484,7 @@
           saveDB(db);
           app.refreshDB();
 
-          alert('AKSES DITOLAK!\n\nSistem memblokir mutlak penambahan akun dengan role Pemilik/Owner baru (hanya boleh ada 1 akun Owner utama di sistem). Percobaan pelanggaran keamanan ini telah dicatat secara permanen dan dilaporkan kepada Owner.');
+          app.setCustomAlert({ title: 'Akses Ditangguhkan!', message: 'Sistem memblokir mutlak penambahan akun dengan role Pemilik/Owner baru (hanya boleh ada 1 akun Owner utama di sistem). Percobaan pelanggaran keamanan ini telah dicatat secara permanen dan dilaporkan kepada Owner.', type: 'danger' });
           return;
         }
         onSave({ name, email, password, role: selectedRole });
@@ -17115,7 +17115,7 @@
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
-      
+      const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
       const menuItems = [];
       if (user?.role === 'owner') {
         menuItems.push({ id: 'owner_dashboard', icon: 'layout-dashboard', label: 'Dashboard Owner' });
@@ -17144,7 +17144,7 @@
         else if (activeRole === 'dapur') label = 'Workspace Dapur';
         menuItems.push({ id: 'admin_workspace', icon: 'briefcase', label: label });
       }
-      menuItems.push({ id: 'pos', icon: 'shopping-cart', label: 'Kasir POS' });
+      if (user?.role !== 'dapur' && user?.roleId !== 'dapur') { menuItems.push({ id: 'pos', icon: 'shopping-cart', label: 'Kasir POS' }); }
       if (['admin', 'owner', 'keuangan', 'manager'].includes(user?.role)) {
         menuItems.push({ id: 'products', icon: 'package', label: 'Produk' });
         menuItems.push({ id: 'reports', icon: 'bar-chart-3', label: 'Laporan' });
@@ -17174,7 +17174,7 @@
             {menuItems.map(item => (
               <button
                 key={item.id}
-                onClick={() => { app.setPage(item.id); if(window.innerWidth < 768) app.setSidebar(false); }}
+                onClick={() => { navigate(item.id); if(window.innerWidth < 768) app.setSidebar(false); }}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition font-medium text-sm ${page === item.id ? 'bg-sky-500 text-white shadow-md' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`}
               >
                 <Icon name={item.icon} size={20} />
@@ -17219,9 +17219,9 @@
         </aside>
       );
     }
-
     function BottomNav() {
       const app = useContext(AppContext);
+      const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
       const menuItems = [];
       if (app.user?.role === 'owner') {
         menuItems.push({ id: 'owner_dashboard', icon: 'layout-dashboard', label: 'Dashboard' });
@@ -17237,7 +17237,7 @@
       if (hasWorkspace) {
         menuItems.push({ id: 'admin_workspace', icon: 'briefcase', label: 'Workspace' });
       }
-      menuItems.push({ id: 'pos', icon: 'shopping-cart', label: 'POS' });
+      if (app.user?.role !== 'dapur' && app.user?.roleId !== 'dapur') { menuItems.push({ id: 'pos', icon: 'shopping-cart', label: 'POS' }); }
       if (['admin', 'owner', 'keuangan', 'manager'].includes(app.user?.role)) {
         menuItems.push({ id: 'products', icon: 'package', label: 'Produk' });
         menuItems.push({ id: 'reports', icon: 'bar-chart-3', label: 'Laporan' });
@@ -17252,7 +17252,7 @@
       return (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 flex justify-around items-center h-16 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
           {menuItems.map(item => (
-            <button key={item.id} onClick={() => app.setPage(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${app.page === item.id ? 'text-sky-600' : 'text-zinc-400'}`}>
+            <button key={item.id} onClick={() => navigate(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${app.page === item.id ? 'text-sky-600' : 'text-zinc-400'}`}>
               <Icon name={item.icon} size={22} className={app.page === item.id ? 'fill-sky-100' : ''} />
               <span className={`text-[10px] mt-1 font-medium ${app.page === item.id ? 'font-bold' : ''}`}>{item.label}</span>
             </button>
@@ -17281,7 +17281,7 @@
       const db = getDB();
       const pendingReqs = db.bypassRequests.filter(r => r.status === 'pending');
       const pendingPurchases = (db.purchases || []).filter(p => p.status === 'pending');
-      const totalNotifs = pendingReqs.length + (app.user?.role === 'owner' ? pendingPurchases.length : 0);
+      const securityAlerts = app.user?.role === 'owner' ? (db.ownerNotifications || []) : []; const unreadSecurityCount = securityAlerts.filter(n => n.unread).length; const totalNotifs = pendingReqs.length + (app.user?.role === 'owner' ? (pendingPurchases.length + unreadSecurityCount) : 0);
       const currentDateTime = now.toLocaleDateString('id-ID', {
         weekday: 'long',
         year: 'numeric',
@@ -17441,7 +17441,7 @@
                               </button>
                             </div>
                           ))}
-                        </>
+                          {app.user?.role === 'owner' && securityAlerts.map(alert => <div key={alert.id} className="p-4 space-y-2 text-xs text-left bg-rose-50/50 border-t border-rose-100"><div className="flex justify-between items-start"><div><p className="font-bold text-rose-700 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span><span>{alert.title}</span></p><p className="text-zinc-600 text-[10px] mt-1 font-semibold">{alert.message}</p></div><span className="text-[9px] text-zinc-450 font-mono">{new Date(alert.timestamp).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</span></div>{alert.unread && <button onClick={() => { const freshDb = getDB(); const notifIdx = freshDb.ownerNotifications.findIndex(n => n.id === alert.id); if (notifIdx !== -1) { freshDb.ownerNotifications[notifIdx].unread = false; saveDB(freshDb); app.refreshDB(); } }} className="w-full py-1.5 mt-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold text-[10px] flex items-center justify-center transition shadow-sm">Tandai Dibaca</button>}</div>)}</>
                       )}
                     </div>
                   </div>
