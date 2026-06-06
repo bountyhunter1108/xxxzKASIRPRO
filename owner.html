@@ -2049,7 +2049,6 @@
       );
     }
 
-    // 1b. OWNER DASHBOARD
     function OwnerDashboard() {
       const app = useContext(AppContext);
       const db = getDB();
@@ -4632,7 +4631,7 @@
       );
     }
 
-
+    // 2. POS PAGE
     function SyncModal({ appState }) {
       const [inputCode, setInputCode] = useState('');
       const [loading, setLoading] = useState(false);
@@ -4778,7 +4777,7 @@
       );
     }
 
-
+    // ==================== COMPONENT: ADMIN WORKSPACE ====================
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -5124,7 +5123,7 @@
       );
     }
 
-    // ==================== LOCK SCREEN OVERLAY ====================
+    // ==================== BUKA SHIFT PAGE ====================
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -5180,6 +5179,7 @@
       );
     }
 
+    // ==================== OPERATIONAL HOURS OVERLAY ====================
     function App() {
       const appState = useAppState();
 

@@ -1975,7 +1975,7 @@
         const localDb = getDB();
         const localUser = localDb.users.find(u => (u.email || '').trim().toLowerCase() === loginEmail && String(u.password || '').trim() === loginPassword);
         
-        const proceedLogin = (user, dbContext) => {
+        const proceedLogin = async (user, dbContext) => {
           if (!user.active) {
             setError('Akun tidak aktif');
             setLoading(false);
@@ -1984,22 +1984,24 @@
           
           const sessId = createInitialSession(user);
           logAuditAction('Login', 'Berhasil masuk ke sistem Smile POS', user);
-          app.login(makeSafeUser(user, dbContext));
-          setLoading(false);
           
           if (sessId) {
-            setTimeout(() => {
+            await new Promise((resolve) => {
               app.captureDeviceSession(user, sessId, () => {
                 app.refreshDB();
+                resolve();
               });
-            }, 100);
+            });
           }
+
+          app.login(makeSafeUser(user, dbContext));
+          setLoading(false);
           return true;
         };
 
         if (localUser) {
           // Login langsung
-          const loggedIn = proceedLogin(localUser, localDb);
+          const loggedIn = await proceedLogin(localUser, localDb);
           if (loggedIn) {
             // Lakukan sync Supabase di background (non-blocking)
             (async () => {
@@ -2045,7 +2047,7 @@
           return;
         }
         
-        proceedLogin(postSyncUser, postSyncDb);
+        await proceedLogin(postSyncUser, postSyncDb);
       };
 
       return (
@@ -2188,16 +2190,17 @@
                     
                     const safeUser = makeSafeUser(foundUser, db);
                     const sessId = createInitialSession(foundUser);
+                    if (sessId) {
+                      await new Promise((resolve) => {
+                        app.captureDeviceSession(foundUser, sessId, () => {
+                          app.refreshDB();
+                          resolve();
+                        });
+                      });
+                    }
                     app.login(safeUser);
                     setShowOwnerLogin(false);
                     setOwnerLoading(false);
-                    if (sessId) {
-                      setTimeout(() => {
-                        app.captureDeviceSession(foundUser, sessId, () => {
-                          app.refreshDB();
-                        });
-                      }, 100);
-                    }
                   } else {
                     setOwnerError('Email atau Password Pemilik tidak cocok.');
                     setOwnerLoading(false);

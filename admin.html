@@ -2049,7 +2049,6 @@
       );
     }
 
-    // 3. PRODUCTS PAGE
     function ProductsPage() {
       const app = useContext(AppContext);
       const [products, setProducts] = useState([]);
@@ -3642,7 +3641,7 @@
       );
     }
 
-    // 5. USERS PAGE
+    // ==================== TUTUP SHIFT MODAL ====================
     function UsersPage() {
       const app = useContext(AppContext);
       const [showForm, setShowForm] = useState(false);
@@ -11930,7 +11929,7 @@
       );
     }
 
-    // ==================== LOCK SCREEN OVERLAY ====================
+    // ==================== BUKA SHIFT PAGE ====================
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -11986,6 +11985,7 @@
       );
     }
 
+    // ==================== OPERATIONAL HOURS OVERLAY ====================
     function App() {
       const appState = useAppState();
 

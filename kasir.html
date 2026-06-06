@@ -2049,7 +2049,6 @@
       );
     }
 
-
     function DynamicQRCode({ text, width = 170 }) {
       const canvasRef = useRef(null);
       const [error, setError] = useState(false);
@@ -2414,7 +2413,7 @@
       );
     }
 
-    // 2. POS PAGE
+    // 1b. OWNER DASHBOARD
     function POSPage() {
       const app = useContext(AppContext);
       const { selectedMember, setSelectedMember, discount, setDiscount, roundingMode, setRoundingMode } = app;
@@ -3890,7 +3889,7 @@
       );
     }
 
-
+    // 3. PRODUCTS PAGE
     function TransactionEditModal({ tx, onClose, app }) {
       const [cashier, setCashier] = useState(tx.cashier);
       const [method, setMethod] = useState(tx.method || 'cash');
@@ -4195,7 +4194,7 @@
         </div>
       );
     }
-    // ==================== TUTUP SHIFT MODAL ====================
+
     function TutupShiftModal({ appState }) {
       const [actualCash, setActualCash] = useState('');
       const db = getDB();
@@ -4454,7 +4453,7 @@
     }
 
 
-
+    // 5. USERS PAGE
     function ScannerModal({ user, onClose, appState }) {
       // Keamanan: Cegah non-owner mengubah foto profil owner
       if (user?.role === 'owner' && appState.user?.role !== 'owner') {
@@ -4935,7 +4934,7 @@
       );
     }
 
-
+    // ==================== COMPONENT: ADMIN WORKSPACE ====================
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -5674,161 +5673,6 @@
       );
     }
 
-    // ==================== MAIN APP COMPONENT ====================
-    function App() {
-      const appState = useAppState();
-
-      const isOutsideHours = isOutsideOperationalHours();
-      const showHoursBlock = appState.user && !['admin', 'owner'].includes(appState.user.role) && isOutsideHours && !appState.bypassApproved;
-
-      return (
-        <AppContext.Provider value={appState}>
-          {!appState.user ? (
-            <LoginPage />
-          ) : (
-            <div className="flex h-screen overflow-hidden bg-zinc-50">
-              <Sidebar />
-              {appState.sidebar && (
-                <div onClick={() => appState.setSidebar(false)} className="md:hidden fixed inset-0 bg-black/50 z-30 animate-[fadeIn_0.3s]"></div>
-              )}
-              
-              <div className="flex-1 flex flex-col overflow-hidden relative">
-                <div className="no-print"><Header /></div>
-                <main className="flex-1 overflow-y-auto p-4 md:p-6 custom-scroll">
-                  <div className="w-full max-w-[1600px] mx-auto h-full px-2 sm:px-4">
-                    {appState.page === 'owner_dashboard' && <OwnerDashboard />}
-                    {appState.page === 'admin_workspace' && <AdminWorkspace />}
-                    {appState.page === 'pos' && (!['admin', 'owner'].includes(appState.user?.role) ? (appState.activeShift ? <POSPage /> : <BukaShiftPage />) : <POSPage />)}
-                    {appState.page === 'products' && <ProductsPage />}
-                    {appState.page === 'reports' && <ReportsPage />}
-                    {appState.page === 'users' && <UsersPage />}
-                    {appState.page === 'purchases' && <PurchasesPage />}
-                  </div>
-                </main>
-                <div className="no-print"><BottomNav /></div>
-              </div>
-            </div>
-          )}
-          
-          {appState.isLocked && appState.user && (
-            <LockScreenOverlay appState={appState} />
-          )}
-
-          {showHoursBlock && (
-            <OperationalHoursOverlay appState={appState} />
-          )}
-
-          {appState.showTutupShiftModal && (
-            <TutupShiftModal appState={appState} />
-          )}
-
-          {appState.showSyncModal && (
-            <SyncModal appState={appState} />
-          )}
-
-          {appState.showSuccessModal && appState.lastTransaction && (
-            <TransactionSuccessModal 
-              transaction={appState.lastTransaction} 
-              onClose={() => {
-                appState.setShowSuccessModal(false);
-                appState.setLastTransaction(null);
-              }}
-            />
-          )}
-
-          {/* Hidden Printable Receipt */}
-          {appState.lastTransaction && (
-            <div className="print-receipt print-only">
-              <div className="text-center font-bold mb-2">
-                <h3 className="text-base font-bold">SMILE POS</h3>
-                <p className="text-[9px]">Sistem Kasir Pintar</p>
-                <p className="text-[9px] border-b border-dashed border-zinc-400 pb-1">Jl. POS Sejahtera No. 88</p>
-              </div>
-              
-              <div className="text-[9px] mb-2 font-mono">
-                <div>No. Nota: {appState.lastTransaction.id}</div>
-                <div>Tanggal : {new Date(appState.lastTransaction.date).toLocaleString('id-ID')}</div>
-                <div>Kasir   : {appState.lastTransaction.cashier}</div>
-                {appState.lastTransaction.memberName && <div>Pelanggan: {appState.lastTransaction.memberName}</div>}
-                <div className="border-b border-dashed border-zinc-400 my-1"></div>
-              </div>
-              
-              <div className="text-[9px] font-mono space-y-1">
-                {appState.lastTransaction.items.map(item => (
-                  <div key={item.id}>
-                     <div className="font-semibold">{item.name}</div>
-                     <div className="flex justify-between pl-2">
-                       <span>{item.qty} x Rp {item.effectivePrice.toLocaleString('id-ID')}</span>
-                       <span>Rp {(item.qty * item.effectivePrice).toLocaleString('id-ID')}</span>
-                     </div>
-                  </div>
-                ))}
-                <div className="border-b border-dashed border-zinc-400 my-1"></div>
-              </div>
-              
-              <div className="text-[9px] font-mono space-y-0.5 text-right pl-6">
-                <div className="flex justify-between font-mono">
-                  <span>Subtotal:</span>
-                  <span>Rp {appState.lastTransaction.subtotal.toLocaleString('id-ID')}</span>
-                </div>
-                {appState.lastTransaction.tax > 0 && (
-                  <div className="flex justify-between font-mono">
-                    <span>PPN (10%):</span>
-                    <span>Rp {appState.lastTransaction.tax.toLocaleString('id-ID')}</span>
-                  </div>
-                )}
-                {appState.lastTransaction.discount > 0 && (
-                  <div className="flex justify-between font-mono text-rose-600">
-                    <span>Diskon:</span>
-                    <span>-Rp {appState.lastTransaction.discount.toLocaleString('id-ID')}</span>
-                  </div>
-                )}
-                {appState.lastTransaction.rounding !== 0 && (
-                  <div className="flex justify-between font-mono">
-                    <span>Pembulatan:</span>
-                    <span>Rp {appState.lastTransaction.rounding.toLocaleString('id-ID')}</span>
-                  </div>
-                )}
-                <div className="border-t border-double border-zinc-400 pt-1 flex justify-between font-bold">
-                  <span>TOTAL:</span>
-                  <span>Rp {appState.lastTransaction.total.toLocaleString('id-ID')}</span>
-                </div>
-                <div className="flex justify-between font-mono">
-                  <span>Bayar ({appState.lastTransaction.method.toUpperCase()}):</span>
-                  <span>Rp {appState.lastTransaction.payment.toLocaleString('id-ID')}</span>
-                </div>
-                <div className="flex justify-between font-mono">
-                  <span>Kembali:</span>
-                  <span>Rp {appState.lastTransaction.change.toLocaleString('id-ID')}</span>
-                </div>
-              </div>
-              
-              <div className="text-center font-mono text-[8px] mt-4 border-t border-dashed border-zinc-400 pt-2">
-                <p>Terima Kasih atas Kunjungan Anda</p>
-                <p>Smile POS - Layanan POS Pintar</p>
-              </div>
-            </div>
-          )}
-
-          <div className="fixed top-4 right-4 md:top-6 md:right-6 z-[9999] flex flex-col items-end pointer-events-none">
-            {appState.toasts.map(toast => (
-              <div key={toast.id} className="pointer-events-auto">
-                <Toast toast={toast} onClose={(id) => {
-                  appState.setToasts(prev => prev.filter(t => t.id !== id));
-                }} />
-              </div>
-            ))}
-          </div>
-          {appState.permissionPrompt && (
-            <PermissionPromptModal permissionPrompt={appState.permissionPrompt} />
-          )}
-
-          {appState.customAlert && (
-            <CustomAlertModal customAlert={appState.customAlert} onClose={() => appState.setCustomAlert(null)} />
-          )}
-        </AppContext.Provider>
-      );
-    }
     function App() {
       const appState = useAppState();
 
