@@ -7769,6 +7769,7 @@
                 setEditProduct(null);
               }}
             />
+          )}
           {showPageScanner && (
             <POSScannerModal
               onClose={() => setShowPageScanner(false)}
