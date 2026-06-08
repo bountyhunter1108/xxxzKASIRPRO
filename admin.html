@@ -261,13 +261,51 @@
 
     let __db_cache = null;
 
+    const DB_SECURE_KEY = 'SmilePOSSecureDbKey2026';
+
+    function encryptDB(text) {
+      if (!text) return '';
+      let result = '';
+      for (let i = 0; i < text.length; i++) {
+        result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+      }
+      try {
+        return btoa(unescape(encodeURIComponent(result)));
+      } catch(e) {
+        return btoa(result);
+      }
+    }
+
+    function decryptDB(base64Text) {
+      if (!base64Text) return null;
+      if (base64Text.trim().startsWith('{')) {
+        return base64Text;
+      }
+      let text = '';
+      try {
+        try {
+          text = decodeURIComponent(escape(atob(base64Text)));
+        } catch(e) {
+          text = atob(base64Text);
+        }
+        let result = '';
+        for (let i = 0; i < text.length; i++) {
+          result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+        }
+        return result;
+      } catch(e) {
+        return null;
+      }
+    }
+
     function getDB() {
       if (__db_cache) {
         return __db_cache;
       }
       try {
-        const data = localStorage.getItem(DB_KEY);
-        let parsed = data ? JSON.parse(data) : null;
+        const rawData = localStorage.getItem(DB_KEY);
+        let decrypted = rawData ? decryptDB(rawData) : null;
+        let parsed = decrypted ? JSON.parse(decrypted) : null;
         if (!parsed) parsed = defaultData;
         
         // Ensure keys exist
@@ -564,7 +602,7 @@
       }
 
       __db_cache = data;
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
+      localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(data)));
       // Auto-push to Supabase in background (non-blocking)
       sbPush(data);
     }
@@ -869,11 +907,19 @@
         return "Batas minimum stok tidak boleh bernilai negatif.";
       }
 
-      // Check SKU uniqueness
+      // Check Price Margin (Selling below cost)
+      if (!data.openPrice && price < cost) {
+        return `Harga jual (Rp ${price.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+      if (wholesalePrice > 0 && wholesalePrice < cost) {
+        return `Harga grosir (Rp ${wholesalePrice.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+
+      // Check SKU uniqueness (case-insensitive)
       const db = getDB();
-      const skuExists = db.products.some(p => p.sku === data.sku && p.id !== editProductId && p.active !== false);
+      const skuExists = db.products.some(p => p.sku && data.sku && p.sku.trim().toLowerCase() === data.sku.trim().toLowerCase() && p.id !== editProductId && p.active !== false);
       if (skuExists && data.sku) {
-        return `Kode barang "${data.sku}" sudah digunakan oleh produk lain.`;
+        return `Kode barang / SKU "${data.sku}" sudah digunakan oleh produk lain.`;
       }
 
       return null; // Valid
@@ -1011,9 +1057,27 @@
       const refreshDB = () => setDbVersion(v => v + 1);
 
       useEffect(() => {
-        const handleOnline = () => {
+        const handleOnline = async () => {
           setIsOnline(true);
-          addToast('Koneksi internet terhubung', 'success');
+          addToast('Koneksi internet terhubung. Mensinkronkan data...', 'success');
+          try {
+            const cloudData = await sbFetch();
+            if (cloudData) {
+              const localData = getDB();
+              const merged = mergeDB(localData, cloudData);
+              __db_cache = merged;
+              localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(merged)));
+              await sbPush(merged);
+              refreshDB();
+              addToast('Sinkronisasi data cloud berhasil', 'success');
+            } else {
+              await sbPush(getDB());
+              addToast('Data lokal diunggah ke cloud', 'success');
+            }
+          } catch(e) {
+            console.error('Gagal sinkronisasi data offline:', e);
+            addToast('Sinkronisasi cloud gagal', 'error');
+          }
         };
         const handleOffline = () => {
           setIsOnline(false);
@@ -1492,16 +1556,17 @@
         };
       }, []);
 
-      // Idle Timeout - auto-lock layar setelah 15 menit tidak aktif
+      // Idle Timeout - auto-logout setelah 5 menit tidak aktif
       useEffect(() => {
         if (!user) return;
         let idleTimer;
         const resetTimer = () => {
           clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            setIsLocked(true);
-            sessionStorage.setItem('pos_locked', 'true');
-          }, 15 * 60 * 1000); // 15 menit
+            logAuditAction('Auto Logout', 'Sesi ditutup otomatis karena tidak aktif selama 5 menit', user);
+            logout();
+            addToast('Sesi Anda telah berakhir secara otomatis karena tidak ada aktivitas selama 5 menit.', 'warning');
+          }, 5 * 60 * 1000); // 5 menit
         };
         const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'];
         events.forEach(ev => document.addEventListener(ev, resetTimer, { passive: true }));
@@ -1958,6 +2023,7 @@
     }
 
     // Helper to parse UserAgent
+
     function parseUserAgent(ua) {
       let os = "OS Lainnya";
       if (ua.indexOf("Win") !== -1) os = "Windows";
@@ -2022,6 +2088,7 @@
       }
     };
 
+
     function CustomAlertModal({ customAlert, onClose }) {
       const isDanger = customAlert.type === 'danger';
       const iconName = isDanger ? 'shield-alert' : (customAlert.type === 'success' ? 'check' : 'info');
@@ -2049,6 +2116,8 @@
       );
     }
 
+    // 1. LOGIN PAGE
+
     function ProductsPage() {
       const app = useContext(AppContext);
       const [products, setProducts] = useState([]);
@@ -2056,10 +2125,16 @@
       const [showCategoryModal, setShowCategoryModal] = useState(false);
       const [editProduct, setEditProduct] = useState(null);
       const [approvalPrompt, setApprovalPrompt] = useState(null);
+      const [searchQuery, setSearchQuery] = useState('');
+      const [showPageScanner, setShowPageScanner] = useState(false);
       
       // Pagination
       const [currentPage, setCurrentPage] = useState(1);
       const itemsPerPage = 8;
+
+      useEffect(() => {
+        setCurrentPage(1);
+      }, [searchQuery]);
 
       const loadProducts = useCallback(() => {
         setProducts(getDB().products);
@@ -2069,14 +2144,20 @@
 
       // Filter active and sort desc by lexicographical string comparison
       const sortedProducts = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
         return products
-          .filter(p => p.active !== false)
+          .filter(p => p.active !== false && (
+            !query ||
+            (p.name || '').toLowerCase().includes(query) ||
+            (p.sku || '').toLowerCase().includes(query) ||
+            (p.category || '').toLowerCase().includes(query)
+          ))
           .sort((a, b) => {
             const dateA = a.updatedAt || '';
             const dateB = b.updatedAt || '';
             return dateB.localeCompare(dateA);
           });
-      }, [products]);
+      }, [products, searchQuery]);
 
       const totalPages = useMemo(() => Math.ceil(sortedProducts.length / itemsPerPage), [sortedProducts.length]);
       const displayedProducts = useMemo(() => sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage), [sortedProducts, currentPage]);
@@ -2408,6 +2489,39 @@
             </div>
           </div>
 
+          {/* Bar Pencarian Produk dengan Barcode Scanner */}
+          <div className="mb-6 flex gap-3 max-w-md w-full relative">
+            <div className="relative flex-1">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                <Icon name="search" size={16} className="text-zinc-400" />
+              </div>
+              <input
+                type="text"
+                placeholder="Cari nama, SKU, atau kategori..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-10 py-2.5 bg-white border border-zinc-200 rounded-xl focus:border-sky-500 focus:ring-2 focus:ring-sky-200 outline-none text-sm font-medium shadow-sm transition"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute inset-y-0 right-10 flex items-center pr-2.5 text-zinc-400 hover:text-zinc-650"
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowPageScanner(true)}
+                className="absolute inset-y-0 right-2 flex items-center px-2 text-zinc-400 hover:text-sky-600 border-l border-zinc-150 pl-2.5"
+                title="Pindai barcode untuk mencari"
+              >
+                <Icon name="scan-line" size={18} />
+              </button>
+            </div>
+          </div>
+
           {/* Admin Approval Section for Product Proposals */}
           {app.user?.role === 'admin' && (
             <>
@@ -2636,13 +2750,27 @@
                 setEditProduct(null);
               }}
             />
+          {showPageScanner && (
+            <POSScannerModal
+              onClose={() => setShowPageScanner(false)}
+              onScanSuccess={(code) => {
+                setSearchQuery(code);
+                setShowPageScanner(false);
+                app.addToast(`Scan Sukses: ${code}`, 'success');
+              }}
+              onPhotoCapture={() => {}}
+              appState={app}
+            />
           )}
         </div>
       );
     }
 
+
     function ProductForm({ product, onSave, onCancel }) {
+      const app = useContext(AppContext);
       const dbCategories = getDB().categories || ['Makanan', 'Minuman', 'Snack'];
+      const [showFormScanner, setShowFormScanner] = useState(false);
       
       const [form, setForm] = useState({
         sku: product?.sku || `SKU${Date.now().toString().slice(-4)}`,
@@ -2703,7 +2831,24 @@
             </div>
             <div className="text-left">
               <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Kode Barang</label>
-              <input type="text" value={form.sku} onChange={e => setForm({...form, sku: e.target.value})} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-mono text-sm text-zinc-800 focus:bg-white focus:border-zinc-500" required placeholder="Contoh: SKU001" />
+              <div className="relative">
+                <input 
+                  type="text" 
+                  value={form.sku} 
+                  onChange={e => setForm({...form, sku: e.target.value})} 
+                  className="w-full pl-4 pr-10 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-mono text-sm text-zinc-800 focus:bg-white focus:border-zinc-500" 
+                  required 
+                  placeholder="Contoh: SKU001" 
+                />
+                <button 
+                  type="button" 
+                  onClick={() => setShowFormScanner(true)} 
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400 hover:text-sky-600 border-l border-zinc-150 pl-2.5"
+                  title="Pindai barcode untuk kode barang"
+                >
+                  <Icon name="scan-line" size={16} />
+                </button>
+              </div>
             </div>
             <div className="text-left">
               <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Kategori</label>
@@ -2778,9 +2923,22 @@
             <button type="button" onClick={onCancel} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl font-semibold hover:bg-zinc-200 transition">Batal</button>
             <button type="submit" className="flex-1 py-3 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition shadow-lg">Simpan</button>
           </div>
+          {showFormScanner && (
+            <POSScannerModal
+              onClose={() => setShowFormScanner(false)}
+              onScanSuccess={(code) => {
+                setForm(f => ({ ...f, sku: code }));
+                setShowFormScanner(false);
+                app.addToast(`Scan Sukses: ${code}`, 'success');
+              }}
+              onPhotoCapture={() => {}}
+              appState={app}
+            />
+          )}
         </form>
       );
     }
+
 
     function ReportsPage() {
       const app = useContext(AppContext);
@@ -3576,6 +3734,7 @@
     }
     
     // ==================== SHIFT FORM MODAL ====================
+
     function formatDateTimeLocal(isoString) {
       if (!isoString) return '';
       const date = new Date(isoString);
@@ -3584,6 +3743,7 @@
       const localISOTime = (new Date(date.getTime() - tzoffset)).toISOString().slice(0, 16);
       return localISOTime;
     }
+
 
     function ShiftFormModal({ shift, onSave, onCancel }) {
       const [startTime, setStartTime] = useState(shift ? formatDateTimeLocal(shift.startTime) : formatDateTimeLocal(new Date().toISOString()));
@@ -3642,6 +3802,7 @@
     }
 
     // ==================== TUTUP SHIFT MODAL ====================
+
     function UsersPage() {
       const app = useContext(AppContext);
       const [showForm, setShowForm] = useState(false);
@@ -4011,6 +4172,7 @@
     }
 
     // ==================== USER LOGIN HISTORY MODAL ====================
+
     function UserLoginHistoryModal({ user, onClose }) {
       const db = getDB();
       const sessions = useMemo(() => {
@@ -4143,6 +4305,7 @@
     }
 
     // ==================== PURCHASES PAGE (PENGADAAN) ====================
+
     function PurchasesPage() {
       const app = useContext(AppContext);
       const db = getDB();
@@ -4911,6 +5074,7 @@
       );
     }
 
+
     function UserForm({ user, onSave, onCancel }) {
       const app = useContext(AppContext);
       const [name, setName] = useState(user?.name || '');
@@ -5018,6 +5182,7 @@
         </div>
       );
     }
+
 
     function SyncModal({ appState }) {
       const [inputCode, setInputCode] = useState('');
@@ -5165,6 +5330,7 @@
     }
 
     // ==================== COMPONENT: ADMIN WORKSPACE ====================
+
     function AdminWorkspace() {
       const app = useContext(AppContext);
       const db = getDB();
@@ -11584,6 +11750,7 @@
       );
     }
 
+
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -11691,6 +11858,7 @@
         </aside>
       );
     }
+
     function BottomNav() {
       const app = useContext(AppContext);
       const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
@@ -11732,6 +11900,7 @@
         </nav>
       );
     }
+
 
     function Header() {
       const app = useContext(AppContext);
@@ -11930,6 +12099,7 @@
     }
 
     // ==================== BUKA SHIFT PAGE ====================
+
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -11986,6 +12156,7 @@
     }
 
     // ==================== OPERATIONAL HOURS OVERLAY ====================
+
     function App() {
       const appState = useAppState();
 
@@ -12058,7 +12229,6 @@
       );
     }
 
-
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<ErrorBoundary><App /></ErrorBoundary>);
   </script>
@@ -12092,7 +12262,7 @@
         console.log('[Cache] No valid compiled cache found. Compiling with Babel...');
         const rootEl = document.getElementById('root');
         if (rootEl) {
-          rootEl.innerHTML = ` 
+          rootEl.innerHTML = 
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#09090b;color:#f4f4f5;font-family:sans-serif;">
               <div style="width:40px;height:40px;border:4px solid #27272a;border-top-color:#0ea5e9;border-radius:50%;animation:spin 1s linear infinite;"></div>
               <h2 style="font-size:18px;font-weight:700;margin-top:24px;letter-spacing:-0.025em;">Mengoptimalkan Halaman...</h2>
@@ -12101,7 +12271,7 @@
                 @keyframes spin { to { transform: rotate(360deg); } }
               </style>
             </div>
-          ` ;
+          ;
         }
 
         setTimeout(() => {

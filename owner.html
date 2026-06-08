@@ -261,13 +261,51 @@
 
     let __db_cache = null;
 
+    const DB_SECURE_KEY = 'SmilePOSSecureDbKey2026';
+
+    function encryptDB(text) {
+      if (!text) return '';
+      let result = '';
+      for (let i = 0; i < text.length; i++) {
+        result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+      }
+      try {
+        return btoa(unescape(encodeURIComponent(result)));
+      } catch(e) {
+        return btoa(result);
+      }
+    }
+
+    function decryptDB(base64Text) {
+      if (!base64Text) return null;
+      if (base64Text.trim().startsWith('{')) {
+        return base64Text;
+      }
+      let text = '';
+      try {
+        try {
+          text = decodeURIComponent(escape(atob(base64Text)));
+        } catch(e) {
+          text = atob(base64Text);
+        }
+        let result = '';
+        for (let i = 0; i < text.length; i++) {
+          result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+        }
+        return result;
+      } catch(e) {
+        return null;
+      }
+    }
+
     function getDB() {
       if (__db_cache) {
         return __db_cache;
       }
       try {
-        const data = localStorage.getItem(DB_KEY);
-        let parsed = data ? JSON.parse(data) : null;
+        const rawData = localStorage.getItem(DB_KEY);
+        let decrypted = rawData ? decryptDB(rawData) : null;
+        let parsed = decrypted ? JSON.parse(decrypted) : null;
         if (!parsed) parsed = defaultData;
         
         // Ensure keys exist
@@ -564,7 +602,7 @@
       }
 
       __db_cache = data;
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
+      localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(data)));
       // Auto-push to Supabase in background (non-blocking)
       sbPush(data);
     }
@@ -869,11 +907,19 @@
         return "Batas minimum stok tidak boleh bernilai negatif.";
       }
 
-      // Check SKU uniqueness
+      // Check Price Margin (Selling below cost)
+      if (!data.openPrice && price < cost) {
+        return `Harga jual (Rp ${price.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+      if (wholesalePrice > 0 && wholesalePrice < cost) {
+        return `Harga grosir (Rp ${wholesalePrice.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+
+      // Check SKU uniqueness (case-insensitive)
       const db = getDB();
-      const skuExists = db.products.some(p => p.sku === data.sku && p.id !== editProductId && p.active !== false);
+      const skuExists = db.products.some(p => p.sku && data.sku && p.sku.trim().toLowerCase() === data.sku.trim().toLowerCase() && p.id !== editProductId && p.active !== false);
       if (skuExists && data.sku) {
-        return `Kode barang "${data.sku}" sudah digunakan oleh produk lain.`;
+        return `Kode barang / SKU "${data.sku}" sudah digunakan oleh produk lain.`;
       }
 
       return null; // Valid
@@ -1011,9 +1057,27 @@
       const refreshDB = () => setDbVersion(v => v + 1);
 
       useEffect(() => {
-        const handleOnline = () => {
+        const handleOnline = async () => {
           setIsOnline(true);
-          addToast('Koneksi internet terhubung', 'success');
+          addToast('Koneksi internet terhubung. Mensinkronkan data...', 'success');
+          try {
+            const cloudData = await sbFetch();
+            if (cloudData) {
+              const localData = getDB();
+              const merged = mergeDB(localData, cloudData);
+              __db_cache = merged;
+              localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(merged)));
+              await sbPush(merged);
+              refreshDB();
+              addToast('Sinkronisasi data cloud berhasil', 'success');
+            } else {
+              await sbPush(getDB());
+              addToast('Data lokal diunggah ke cloud', 'success');
+            }
+          } catch(e) {
+            console.error('Gagal sinkronisasi data offline:', e);
+            addToast('Sinkronisasi cloud gagal', 'error');
+          }
         };
         const handleOffline = () => {
           setIsOnline(false);
@@ -1492,16 +1556,17 @@
         };
       }, []);
 
-      // Idle Timeout - auto-lock layar setelah 15 menit tidak aktif
+      // Idle Timeout - auto-logout setelah 5 menit tidak aktif
       useEffect(() => {
         if (!user) return;
         let idleTimer;
         const resetTimer = () => {
           clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            setIsLocked(true);
-            sessionStorage.setItem('pos_locked', 'true');
-          }, 15 * 60 * 1000); // 15 menit
+            logAuditAction('Auto Logout', 'Sesi ditutup otomatis karena tidak aktif selama 5 menit', user);
+            logout();
+            addToast('Sesi Anda telah berakhir secara otomatis karena tidak ada aktivitas selama 5 menit.', 'warning');
+          }, 5 * 60 * 1000); // 5 menit
         };
         const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'];
         events.forEach(ev => document.addEventListener(ev, resetTimer, { passive: true }));
@@ -1958,6 +2023,7 @@
     }
 
     // Helper to parse UserAgent
+
     function parseUserAgent(ua) {
       let os = "OS Lainnya";
       if (ua.indexOf("Win") !== -1) os = "Windows";
@@ -2022,6 +2088,7 @@
       }
     };
 
+
     function CustomAlertModal({ customAlert, onClose }) {
       const isDanger = customAlert.type === 'danger';
       const iconName = isDanger ? 'shield-alert' : (customAlert.type === 'success' ? 'check' : 'info');
@@ -2048,6 +2115,8 @@
         </div>
       );
     }
+
+    // 1. LOGIN PAGE
 
     function OwnerDashboard() {
       const app = useContext(AppContext);
@@ -2545,6 +2614,58 @@
       const shiftsList = useMemo(() => {
         return [...(db.shifts || [])].sort((a, b) => new Date(b.startTime) - new Date(a.startTime)).slice(0, 5);
       }, [db.shifts, app.dbVersion]);
+
+      // AI Stock Prediction
+      const aiStockPredictions = useMemo(() => {
+        const transactions = db.transactions || [];
+        const products = db.products || [];
+        const sales30Days = {};
+        const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        
+        transactions.forEach(t => {
+          const txTime = new Date(t.date || t.timestamp).getTime();
+          if (txTime >= thirtyDaysAgo) {
+            (t.items || []).forEach(item => {
+              const pId = item.id;
+              const salesQty = item.qty || item.quantity || 1;
+              sales30Days[pId] = (sales30Days[pId] || 0) + salesQty;
+            });
+          }
+        });
+
+        const predictions = [];
+        products.forEach(p => {
+          if (p.active === false) return;
+          const qtySold = sales30Days[p.id] || 0;
+          const velocity = qtySold / 30;
+          
+          if (velocity > 0) {
+            const currentStock = p.stock || 0;
+            const daysRemaining = currentStock / velocity;
+            if (daysRemaining <= 7) {
+              predictions.push({
+                id: p.id,
+                name: p.name,
+                sku: p.sku,
+                stock: currentStock,
+                dailySales: velocity.toFixed(1),
+                daysRemaining: Math.ceil(daysRemaining)
+              });
+            }
+          } else if ((p.stock || 0) <= 0) {
+            predictions.push({
+              id: p.id,
+              name: p.name,
+              sku: p.sku,
+              stock: p.stock || 0,
+              dailySales: '0.0',
+              daysRemaining: 0
+            });
+          }
+        });
+
+        return predictions.sort((a, b) => a.daysRemaining - b.daysRemaining).slice(0, 5);
+      }, [db.products, db.transactions]);
 
       // Audit Logs
       const auditList = useMemo(() => {
@@ -3124,43 +3245,98 @@
             </div>
           </div>
 
-          {/* Shifts Monitoring */}
-          <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs overflow-hidden flex flex-col max-h-96">
-            <h4 className="font-bold text-sm text-zinc-800 mb-4 flex items-center gap-2">
-              <Icon name="key-round" size={16} className="text-amber-500" />
-              <span>Pemantauan Shift Kasir Aktif</span>
-            </h4>
-            <div className="flex-1 overflow-auto custom-scroll">
-              <table className="w-full text-xs">
-                <thead className="bg-zinc-50 font-bold text-zinc-550 border-b border-zinc-150">
-                  <tr>
-                    <th className="p-2 text-left">Kasir</th>
-                    <th className="p-2 text-left">Waktu Mulai</th>
-                    <th className="p-2 text-right">Modal Awal</th>
-                    <th className="p-2 text-right">Uang Laci</th>
-                    <th className="p-2 text-right">Selisih</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-100">
-                  {shiftsList.length === 0 ? (
-                    <tr><td colSpan="5" className="p-4 text-center text-zinc-400">Tidak ada riwayat shift</td></tr>
-                  ) : (
-                    shiftsList.map(s => (
-                      <tr key={s.id} className="hover:bg-zinc-50/50">
-                        <td className="p-2 font-semibold text-zinc-700">{s.cashierName}</td>
-                        <td className="p-2 text-zinc-450">{new Date(s.startTime).toLocaleDateString('id-ID', {day:'numeric',month:'short'})} {new Date(s.startTime).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</td>
-                        <td className="p-2 text-right text-zinc-700">Rp {s.startCash?.toLocaleString('id-ID')}</td>
-                        <td className="p-2 text-right font-bold text-zinc-800">
-                          {s.status === 'open' ? 'Shift Berjalan' : `Rp ${s.actualCash?.toLocaleString('id-ID')}`}
-                        </td>
-                        <td className={`p-2 text-right font-bold ${s.difference === 0 ? 'text-emerald-600' : s.difference > 0 ? 'text-sky-600' : 'text-rose-600'}`}>
-                          {s.status === 'open' ? '-' : s.difference === 0 ? 'Pas' : (s.difference > 0 ? '+' : '') + s.difference.toLocaleString('id-ID')}
-                        </td>
+          {/* Shifts Monitoring & AI Stock Prediction */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            {/* Shifts Monitoring */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs overflow-hidden flex flex-col max-h-96">
+              <h4 className="font-bold text-sm text-zinc-800 mb-4 flex items-center gap-2">
+                <Icon name="key-round" size={16} className="text-amber-500" />
+                <span>Pemantauan Shift Kasir Aktif</span>
+              </h4>
+              <div className="flex-1 overflow-auto custom-scroll">
+                <table className="w-full text-xs">
+                  <thead className="bg-zinc-50 font-bold text-zinc-550 border-b border-zinc-150">
+                    <tr>
+                      <th className="p-2 text-left">Kasir</th>
+                      <th className="p-2 text-left">Waktu Mulai</th>
+                      <th className="p-2 text-right">Modal Awal</th>
+                      <th className="p-2 text-right">Uang Laci</th>
+                      <th className="p-2 text-right">Selisih</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {shiftsList.length === 0 ? (
+                      <tr><td colSpan="5" className="p-4 text-center text-zinc-400">Tidak ada riwayat shift</td></tr>
+                    ) : (
+                      shiftsList.map(s => (
+                        <tr key={s.id} className="hover:bg-zinc-50/50">
+                          <td className="p-2 font-semibold text-zinc-700">{s.cashierName}</td>
+                          <td className="p-2 text-zinc-450">{new Date(s.startTime).toLocaleDateString('id-ID', {day:'numeric',month:'short'})} {new Date(s.startTime).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</td>
+                          <td className="p-2 text-right text-zinc-700">Rp {s.startCash?.toLocaleString('id-ID')}</td>
+                          <td className="p-2 text-right font-bold text-zinc-800">
+                            {s.status === 'open' ? 'Shift Berjalan' : `Rp ${s.actualCash?.toLocaleString('id-ID')}`}
+                          </td>
+                          <td className={`p-2 text-right font-bold ${s.difference === 0 ? 'text-emerald-600' : s.difference > 0 ? 'text-sky-600' : 'text-rose-600'}`}>
+                            {s.status === 'open' ? '-' : s.difference === 0 ? 'Pas' : (s.difference > 0 ? '+' : '') + s.difference.toLocaleString('id-ID')}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* AI Stock Prediction Card */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs overflow-hidden flex flex-col max-h-96">
+              <h4 className="font-bold text-sm text-zinc-850 mb-4 flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Icon name="sparkles" size={16} className="text-purple-650" />
+                  <span>AI Prediksi Stok Habis (1 Minggu)</span>
+                </span>
+                <span className="text-[10px] bg-purple-55 text-purple-700 px-2 py-0.5 rounded-full font-bold">Predictive AI</span>
+              </h4>
+              <div className="flex-1 overflow-auto custom-scroll">
+                {aiStockPredictions.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full py-8 text-center text-zinc-400">
+                    <Icon name="check-circle-2" size={32} className="text-emerald-500 mb-2" />
+                    <p className="text-xs font-semibold text-zinc-550">Stok Sangat Aman</p>
+                    <p className="text-[10px]">Semua produk diprediksi mencukupi untuk 7 hari ke depan.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead className="bg-zinc-50 text-zinc-650 border-b border-zinc-150 font-bold">
+                      <tr>
+                        <th className="p-2 text-left">Nama Produk</th>
+                        <th className="p-2 text-center">Stok</th>
+                        <th className="p-2 text-center">Laju/Hari</th>
+                        <th className="p-2 text-right">Sisa Hari</th>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {aiStockPredictions.map(pred => (
+                        <tr key={pred.id} className="hover:bg-zinc-50/50">
+                          <td className="p-2 min-w-[120px]">
+                            <p className="font-semibold text-zinc-700 truncate">{pred.name}</p>
+                            <p className="text-[10px] text-zinc-400">SKU: {pred.sku}</p>
+                          </td>
+                          <td className="p-2 text-center font-bold text-zinc-800">{pred.stock} pcs</td>
+                          <td className="p-2 text-center text-zinc-600">{pred.dailySales} pcs</td>
+                          <td className="p-2 text-right">
+                            {pred.daysRemaining === 0 ? (
+                              <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100">Habis</span>
+                            ) : (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${pred.daysRemaining <= 3 ? 'text-amber-600 bg-amber-50 border-amber-100' : 'text-purple-650 bg-purple-50 border-purple-100'}`}>
+                                {pred.daysRemaining} hari lagi
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
         </>
@@ -3721,6 +3897,7 @@
       );
     }
 
+
     function ActivityMonitor({ db, app }) {
       const [activeUserFilter, setActiveUserFilter] = useState('all');
       const [activeTypeFilter, setActiveTypeFilter] = useState('all');
@@ -4024,6 +4201,7 @@
         </div>
       );
     }
+
 
     function SecurityMonitor({ db, app }) {
       const [userFilter, setUserFilter] = useState('all');
@@ -4497,6 +4675,7 @@
       );
     }
 
+
     function StaffActivityModal({ user, onClose, allTx, db }) {
       const [tab, setTab] = useState('sales'); // 'sales', 'products', 'logs'
       
@@ -4632,6 +4811,7 @@
     }
 
     // 2. POS PAGE
+
     function SyncModal({ appState }) {
       const [inputCode, setInputCode] = useState('');
       const [loading, setLoading] = useState(false);
@@ -4778,6 +4958,7 @@
     }
 
     // ==================== COMPONENT: ADMIN WORKSPACE ====================
+
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -4885,6 +5066,7 @@
         </aside>
       );
     }
+
     function BottomNav() {
       const app = useContext(AppContext);
       const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
@@ -4926,6 +5108,7 @@
         </nav>
       );
     }
+
 
     function Header() {
       const app = useContext(AppContext);
@@ -5124,6 +5307,7 @@
     }
 
     // ==================== BUKA SHIFT PAGE ====================
+
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -5180,6 +5364,7 @@
     }
 
     // ==================== OPERATIONAL HOURS OVERLAY ====================
+
     function App() {
       const appState = useAppState();
 
@@ -5240,7 +5425,6 @@
       );
     }
 
-
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<ErrorBoundary><App /></ErrorBoundary>);
   </script>
@@ -5274,7 +5458,7 @@
         console.log('[Cache] No valid compiled cache found. Compiling with Babel...');
         const rootEl = document.getElementById('root');
         if (rootEl) {
-          rootEl.innerHTML = ` 
+          rootEl.innerHTML = 
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#09090b;color:#f4f4f5;font-family:sans-serif;">
               <div style="width:40px;height:40px;border:4px solid #27272a;border-top-color:#0ea5e9;border-radius:50%;animation:spin 1s linear infinite;"></div>
               <h2 style="font-size:18px;font-weight:700;margin-top:24px;letter-spacing:-0.025em;">Mengoptimalkan Halaman...</h2>
@@ -5283,7 +5467,7 @@
                 @keyframes spin { to { transform: rotate(360deg); } }
               </style>
             </div>
-          ` ;
+          ;
         }
 
         setTimeout(() => {

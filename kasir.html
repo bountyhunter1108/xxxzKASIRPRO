@@ -261,13 +261,51 @@
 
     let __db_cache = null;
 
+    const DB_SECURE_KEY = 'SmilePOSSecureDbKey2026';
+
+    function encryptDB(text) {
+      if (!text) return '';
+      let result = '';
+      for (let i = 0; i < text.length; i++) {
+        result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+      }
+      try {
+        return btoa(unescape(encodeURIComponent(result)));
+      } catch(e) {
+        return btoa(result);
+      }
+    }
+
+    function decryptDB(base64Text) {
+      if (!base64Text) return null;
+      if (base64Text.trim().startsWith('{')) {
+        return base64Text;
+      }
+      let text = '';
+      try {
+        try {
+          text = decodeURIComponent(escape(atob(base64Text)));
+        } catch(e) {
+          text = atob(base64Text);
+        }
+        let result = '';
+        for (let i = 0; i < text.length; i++) {
+          result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+        }
+        return result;
+      } catch(e) {
+        return null;
+      }
+    }
+
     function getDB() {
       if (__db_cache) {
         return __db_cache;
       }
       try {
-        const data = localStorage.getItem(DB_KEY);
-        let parsed = data ? JSON.parse(data) : null;
+        const rawData = localStorage.getItem(DB_KEY);
+        let decrypted = rawData ? decryptDB(rawData) : null;
+        let parsed = decrypted ? JSON.parse(decrypted) : null;
         if (!parsed) parsed = defaultData;
         
         // Ensure keys exist
@@ -564,7 +602,7 @@
       }
 
       __db_cache = data;
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
+      localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(data)));
       // Auto-push to Supabase in background (non-blocking)
       sbPush(data);
     }
@@ -869,11 +907,19 @@
         return "Batas minimum stok tidak boleh bernilai negatif.";
       }
 
-      // Check SKU uniqueness
+      // Check Price Margin (Selling below cost)
+      if (!data.openPrice && price < cost) {
+        return `Harga jual (Rp ${price.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+      if (wholesalePrice > 0 && wholesalePrice < cost) {
+        return `Harga grosir (Rp ${wholesalePrice.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+
+      // Check SKU uniqueness (case-insensitive)
       const db = getDB();
-      const skuExists = db.products.some(p => p.sku === data.sku && p.id !== editProductId && p.active !== false);
+      const skuExists = db.products.some(p => p.sku && data.sku && p.sku.trim().toLowerCase() === data.sku.trim().toLowerCase() && p.id !== editProductId && p.active !== false);
       if (skuExists && data.sku) {
-        return `Kode barang "${data.sku}" sudah digunakan oleh produk lain.`;
+        return `Kode barang / SKU "${data.sku}" sudah digunakan oleh produk lain.`;
       }
 
       return null; // Valid
@@ -1011,9 +1057,27 @@
       const refreshDB = () => setDbVersion(v => v + 1);
 
       useEffect(() => {
-        const handleOnline = () => {
+        const handleOnline = async () => {
           setIsOnline(true);
-          addToast('Koneksi internet terhubung', 'success');
+          addToast('Koneksi internet terhubung. Mensinkronkan data...', 'success');
+          try {
+            const cloudData = await sbFetch();
+            if (cloudData) {
+              const localData = getDB();
+              const merged = mergeDB(localData, cloudData);
+              __db_cache = merged;
+              localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(merged)));
+              await sbPush(merged);
+              refreshDB();
+              addToast('Sinkronisasi data cloud berhasil', 'success');
+            } else {
+              await sbPush(getDB());
+              addToast('Data lokal diunggah ke cloud', 'success');
+            }
+          } catch(e) {
+            console.error('Gagal sinkronisasi data offline:', e);
+            addToast('Sinkronisasi cloud gagal', 'error');
+          }
         };
         const handleOffline = () => {
           setIsOnline(false);
@@ -1492,16 +1556,17 @@
         };
       }, []);
 
-      // Idle Timeout - auto-lock layar setelah 15 menit tidak aktif
+      // Idle Timeout - auto-logout setelah 5 menit tidak aktif
       useEffect(() => {
         if (!user) return;
         let idleTimer;
         const resetTimer = () => {
           clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            setIsLocked(true);
-            sessionStorage.setItem('pos_locked', 'true');
-          }, 15 * 60 * 1000); // 15 menit
+            logAuditAction('Auto Logout', 'Sesi ditutup otomatis karena tidak aktif selama 5 menit', user);
+            logout();
+            addToast('Sesi Anda telah berakhir secara otomatis karena tidak ada aktivitas selama 5 menit.', 'warning');
+          }, 5 * 60 * 1000); // 5 menit
         };
         const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'];
         events.forEach(ev => document.addEventListener(ev, resetTimer, { passive: true }));
@@ -1958,6 +2023,7 @@
     }
 
     // Helper to parse UserAgent
+
     function parseUserAgent(ua) {
       let os = "OS Lainnya";
       if (ua.indexOf("Win") !== -1) os = "Windows";
@@ -2022,6 +2088,7 @@
       }
     };
 
+
     function CustomAlertModal({ customAlert, onClose }) {
       const isDanger = customAlert.type === 'danger';
       const iconName = isDanger ? 'shield-alert' : (customAlert.type === 'success' ? 'check' : 'info');
@@ -2048,6 +2115,8 @@
         </div>
       );
     }
+
+    // 1. LOGIN PAGE
 
     function DynamicQRCode({ text, width = 170 }) {
       const canvasRef = useRef(null);
@@ -2076,6 +2145,7 @@
 
       return <canvas ref={canvasRef} className="mx-auto border border-zinc-200 rounded-xl" />;
     }
+
 
     function QRISDisplay({ totalAmount, qrisMode, setQrisMode, selectedSavedScanId, setSelectedSavedScanId, db, setQrisZoom }) {
       const scans = db.scans || [];
@@ -2146,6 +2216,7 @@
         </div>
       );
     }
+
 
     function HardwareSettingsForm({ app, onClose }) {
       const [printerType, setPrinterType] = useState(() => localStorage.getItem('hw_printer_type') || 'bluetooth');
@@ -2414,6 +2485,7 @@
     }
 
     // 1b. OWNER DASHBOARD
+
     function POSPage() {
       const app = useContext(AppContext);
       const { selectedMember, setSelectedMember, discount, setDiscount, roundingMode, setRoundingMode } = app;
@@ -2427,6 +2499,7 @@
 
       const [showDiscountModal, setShowDiscountModal] = useState(false);
       const [showPaymentModal, setShowPaymentModal] = useState(false);
+      const [showShortcutModal, setShowShortcutModal] = useState(false);
       const [payMethod, setPayMethod] = useState('cash'); // cash or qris
       const [paymentAmount, setPaymentAmount] = useState('');
       const [processing, setProcessing] = useState(false);
@@ -2470,7 +2543,10 @@
 
       useEffect(() => {
         const handleKeyDown = (e) => {
-          if (e.key === 'F2') {
+          if (e.key === 'F1') {
+            e.preventDefault();
+            setShowShortcutModal(true);
+          } else if (e.key === 'F2') {
             e.preventDefault();
             const searchInput = document.querySelector('input[placeholder*="Cari menu"]');
             if (searchInput) searchInput.focus();
@@ -2484,10 +2560,26 @@
             } else {
               app.addToast('Keranjang belanja kosong', 'info');
             }
+          } else if (e.key === 'F8') {
+            e.preventDefault();
+            if (app.cart.length > 0) {
+              if (confirm('Bersihkan seluruh keranjang belanja?')) {
+                app.setCart([]);
+                app.addToast('Keranjang belanja dibersihkan', 'info');
+              }
+            } else {
+              app.addToast('Keranjang belanja sudah kosong', 'info');
+            }
           } else if (e.key === 'F9') {
             e.preventDefault();
             const memberInput = document.querySelector('input[placeholder*="Cari pelanggan"]');
             if (memberInput) memberInput.focus();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setShowPaymentModal(false);
+            setShowDiscountModal(false);
+            setShowShortcutModal(false);
+            setShowMemberModal(null);
           }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -2584,8 +2676,63 @@
       // Load categories dynamically from db
       const categories = useMemo(() => ['All', ...(db.categories || [])], [db.categories]);
 
+      // dynamic AI recommendation list
+      const aiRecommendedProducts = useMemo(() => {
+        const allProducts = db.products.filter(p => p.active !== false);
+
+        if (selectedMember) {
+          const customerTxs = (db.transactions || []).filter(t => t.member && t.member.id === selectedMember.id);
+          if (customerTxs.length > 0) {
+            const purchaseCounts = {};
+            customerTxs.forEach(t => {
+              (t.items || []).forEach(item => {
+                purchaseCounts[item.id] = (purchaseCounts[item.id] || 0) + (item.quantity || 1);
+              });
+            });
+
+            const sortedRecs = allProducts
+              .map(p => ({
+                product: p,
+                score: purchaseCounts[p.id] || 0
+              }))
+              .filter(item => item.score > 0)
+              .sort((a, b) => b.score - a.score)
+              .map(item => item.product);
+
+            if (sortedRecs.length > 0) {
+              if (sortedRecs.length < 8) {
+                const trending = getTrendingProducts(db, allProducts).filter(p => !sortedRecs.some(s => s.id === p.id));
+                return [...sortedRecs, ...trending].slice(0, 8);
+              }
+              return sortedRecs.slice(0, 8);
+            }
+          }
+        }
+        return getTrendingProducts(db, allProducts).slice(0, 8);
+      }, [selectedMember, db.products, db.transactions]);
+
+      function getTrendingProducts(dbContext, allProducts) {
+        const itemSales = {};
+        (dbContext.transactions || []).forEach(t => {
+          (t.items || []).forEach(item => {
+            itemSales[item.id] = (itemSales[item.id] || 0) + (item.quantity || 1);
+          });
+        });
+        return [...allProducts]
+          .sort((a, b) => (itemSales[b.id] || 0) - (itemSales[a.id] || 0));
+      }
+
       // Filter products dynamically based on selected category and text search query
       const products = useMemo(() => {
+        if (category === 'AI_REC') {
+          let list = aiRecommendedProducts;
+          if (search) {
+            const q = search.toLowerCase();
+            list = list.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+          }
+          return list;
+        }
+
         let list = activeSortedProducts;
         if (category !== 'All') {
           list = list.filter(p => p.category === category);
@@ -2595,7 +2742,7 @@
           list = list.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
         }
         return list;
-      }, [activeSortedProducts, category, search]);
+      }, [activeSortedProducts, category, search, aiRecommendedProducts]);
 
       // GS1 Barcode Weight Parser helper
       const parseGS1Barcode = (barcode, prodList) => {
@@ -2761,8 +2908,8 @@
           splitDetails = { cash: cashAmt, qris: qrisAmt };
         } else {
           if (payMethod === 'cash') {
-            if (amtPaid < total) {
-              app.addToast('Uang pembayaran kurang', 'error');
+            if (!paymentAmount || isNaN(amtPaid) || amtPaid < total) {
+              app.addToast(`Pembayaran Tunai Gagal: Uang yang dimasukkan (Rp ${amtPaid.toLocaleString('id-ID')}) kurang dari total tagihan (Rp ${total.toLocaleString('id-ID')})`, 'error');
               return;
             }
             cashChange = amtPaid - total;
@@ -2959,6 +3106,12 @@
                 </button>
               </div>
               <div className="overflow-x-auto hide-scrollbar flex gap-1.5 pb-1">
+                <button 
+                  onClick={() => setCategory('AI_REC')}
+                  className={`whitespace-nowrap px-3 py-1.5 text-sm rounded-lg font-medium transition flex items-center gap-1 ${category === 'AI_REC' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md' : 'bg-purple-55 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}
+                >
+                  <Icon name="sparkles" size={14} /> AI Rekomendasi
+                </button>
                 {categories.map(c => (
                   <button 
                     key={c}
@@ -3075,11 +3228,24 @@
                   <p className="text-xs text-zinc-500">{app.user?.name} â€¢ TX-{Date.now().toString().slice(-4)}</p>
                 </div>
               </div>
-              {app.cart.length > 0 && (
-                <button onClick={app.clearCart} className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl transition">
-                  <Icon name="trash-2" size={20} />
+              <div className="flex gap-1.5 items-center">
+                <button 
+                  onClick={() => setShowShortcutModal(true)} 
+                  className="p-2 text-zinc-500 hover:text-sky-600 hover:bg-sky-50 rounded-xl transition"
+                  title="Panduan Keyboard (F1)"
+                >
+                  <Icon name="keyboard" size={18} />
                 </button>
-              )}
+                {app.cart.length > 0 && (
+                  <button 
+                    onClick={app.clearCart} 
+                    className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl transition"
+                    title="Bersihkan Keranjang (F8)"
+                  >
+                    <Icon name="trash-2" size={18} />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* CRM Member Selection */}
@@ -3764,11 +3930,65 @@
                 setShowOpenPriceModal(false);
                 setSelectedOpenPriceProduct(null);
               }}
-            />
+          {showShortcutModal && (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 animate-[slideUp_0.3s_ease-out] border border-zinc-200 text-left">
+                <div className="flex justify-between items-center mb-6">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2.5 bg-sky-50 text-sky-600 rounded-xl">
+                      <Icon name="keyboard" size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-zinc-950">Panduan Keyboard Shortcuts</h3>
+                      <p className="text-[10px] text-zinc-400 font-medium">Gunakan tombol keyboard untuk navigasi cepat kasir</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowShortcutModal(false)} className="p-2 bg-zinc-100 rounded-full text-zinc-500 hover:bg-zinc-200 transition">
+                    <Icon name="x" size={16} />
+                  </button>
+                </div>
+
+                <div className="space-y-3.5">
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Tampilkan Panduan Ini</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F1</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Fokus Pencarian Produk</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F2</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Tambah Diskon Transaksi</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F4</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Bayar / Selesaikan Transaksi</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F7</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Bersihkan Keranjang Belanja</span>
+                    <kbd className="px-2 py-1 bg-rose-50 border border-rose-200 rounded-lg text-[10px] font-bold font-mono text-rose-600 shadow-sm">F8</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Fokus Pencarian Pelanggan (Member)</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F9</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2">
+                    <span className="text-xs font-semibold text-zinc-700">Tutup / Batalkan Semua Modal</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">ESC</kbd>
+                  </div>
+                </div>
+
+                <button onClick={() => setShowShortcutModal(false)} className="w-full mt-6 py-3 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl font-bold text-sm transition shadow-md">
+                  Mengerti
+                </button>
+              </div>
+            </div>
           )}
         </div>
       );
     }
+
 
     function CategoryModal({ onClose, app }) {
       const [categories, setCategories] = useState([]);
@@ -3890,6 +4110,7 @@
     }
 
     // 3. PRODUCTS PAGE
+
     function TransactionEditModal({ tx, onClose, app }) {
       const [cashier, setCashier] = useState(tx.cashier);
       const [method, setMethod] = useState(tx.method || 'cash');
@@ -4159,6 +4380,7 @@
       );
     }
 
+
     function ReasonModal({ isOpen, onClose, onSubmit, title }) {
       const [reason, setReason] = useState('');
       if (!isOpen) return null;
@@ -4194,6 +4416,7 @@
         </div>
       );
     }
+
 
     function TutupShiftModal({ appState }) {
       const [actualCash, setActualCash] = useState('');
@@ -4279,6 +4502,7 @@
     }
 
     // ==================== OPEN PRICE MODAL ====================
+
     function OpenPriceModal({ product, onConfirm, onCancel }) {
       const [priceInput, setPriceInput] = useState('');
       const handleSubmit = (e) => {
@@ -4328,6 +4552,7 @@
     }
 
     // ==================== VOID WITH PIN MODAL ====================
+
     function VoidWithPINModal({ onConfirm, onCancel }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -4379,6 +4604,7 @@
     }
 
     // ==================== CASHIER REPORT MODAL ====================
+
     function CashierReportModal({ onClose, app }) {
       const admins = getDB().users.filter(u => ['admin', 'owner'].includes(u.role) && u.active);
       const [targetAdminId, setTargetAdminId] = useState(admins[0]?.id || '');
@@ -4454,6 +4680,7 @@
 
 
     // 5. USERS PAGE
+
     function ScannerModal({ user, onClose, appState }) {
       // Keamanan: Cegah non-owner mengubah foto profil owner
       if (user?.role === 'owner' && appState.user?.role !== 'owner') {
@@ -4598,6 +4825,7 @@
         </div>
       );
     }
+
 
     function POSScannerModal({ onClose, onScanSuccess, onPhotoCapture, appState }) {
       const videoRef = useRef(null);
@@ -4789,6 +5017,7 @@
       );
     }
 
+
     function SyncModal({ appState }) {
       const [inputCode, setInputCode] = useState('');
       const [loading, setLoading] = useState(false);
@@ -4935,6 +5164,7 @@
     }
 
     // ==================== COMPONENT: ADMIN WORKSPACE ====================
+
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
@@ -5042,6 +5272,7 @@
         </aside>
       );
     }
+
     function BottomNav() {
       const app = useContext(AppContext);
       const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
@@ -5083,6 +5314,7 @@
         </nav>
       );
     }
+
 
     function Header() {
       const app = useContext(AppContext);
@@ -5281,6 +5513,7 @@
     }
 
     // ==================== BUKA SHIFT PAGE ====================
+
     function BukaShiftPage() {
       const app = useContext(AppContext);
       const [modalUang, setModalUang] = useState('');
@@ -5328,6 +5561,7 @@
     }
 
     // ==================== LOCK SCREEN OVERLAY ====================
+
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
       const [error, setError] = useState('');
@@ -5384,6 +5618,7 @@
     }
 
     // ==================== OPERATIONAL HOURS OVERLAY ====================
+
     function OperationalHoursOverlay({ appState }) {
       const [requested, setRequested] = useState(false);
 
@@ -5439,6 +5674,7 @@
 
     // ==================== MAIN APP ====================
     // ==================== TRANSACTION SUCCESS MODAL ====================
+
     function TransactionSuccessModal({ transaction, onClose }) {
       const [waNumber, setWaNumber] = useState('');
       const [emailAddr, setEmailAddr] = useState('');
@@ -5673,6 +5909,7 @@
       );
     }
 
+
     function App() {
       const appState = useAppState();
 
@@ -5760,20 +5997,20 @@
               <div className="text-[9px] mb-2 font-mono">
                 <div>No. Nota: {appState.lastTransaction.id}</div>
                 <div>Tanggal : {new Date(appState.lastTransaction.date).toLocaleString('id-ID')}</div>
-                <div>Kasir   : {appState.lastTransaction.cashier}</div>
+                <div>Kasir   : {appState.lastTransaction.change}</div>
                 {appState.lastTransaction.memberName && <div>Pelanggan: {appState.lastTransaction.memberName}</div>}
                 <div className="border-b border-dashed border-zinc-400 my-1"></div>
               </div>
               
               <div className="text-[9px] font-mono space-y-1">
                 {appState.lastTransaction.items.map(item => (
-                  <div key={item.id}>
-                     <div className="font-semibold">{item.name}</div>
-                     <div className="flex justify-between pl-2">
-                       <span>{item.qty} x Rp {item.effectivePrice.toLocaleString('id-ID')}</span>
-                       <span>Rp {(item.qty * item.effectivePrice).toLocaleString('id-ID')}</span>
-                     </div>
-                  </div>
+                   <div key={item.id}>
+                      <div className="font-semibold">{item.name}</div>
+                      <div className="flex justify-between pl-2">
+                        <span>{item.qty} x Rp {item.effectivePrice.toLocaleString('id-ID')}</span>
+                        <span>Rp {(item.qty * item.effectivePrice).toLocaleString('id-ID')}</span>
+                      </div>
+                   </div>
                 ))}
                 <div className="border-b border-dashed border-zinc-400 my-1"></div>
               </div>
@@ -5839,7 +6076,6 @@
       );
     }
 
-
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<ErrorBoundary><App /></ErrorBoundary>);
   </script>
@@ -5873,7 +6109,7 @@
         console.log('[Cache] No valid compiled cache found. Compiling with Babel...');
         const rootEl = document.getElementById('root');
         if (rootEl) {
-          rootEl.innerHTML = ` 
+          rootEl.innerHTML = 
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#09090b;color:#f4f4f5;font-family:sans-serif;">
               <div style="width:40px;height:40px;border:4px solid #27272a;border-top-color:#0ea5e9;border-radius:50%;animation:spin 1s linear infinite;"></div>
               <h2 style="font-size:18px;font-weight:700;margin-top:24px;letter-spacing:-0.025em;">Mengoptimalkan Halaman...</h2>
@@ -5882,7 +6118,7 @@
                 @keyframes spin { to { transform: rotate(360deg); } }
               </style>
             </div>
-          ` ;
+          ;
         }
 
         setTimeout(() => {

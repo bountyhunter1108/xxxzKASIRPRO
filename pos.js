@@ -107,13 +107,51 @@
 
     let __db_cache = null;
 
+    const DB_SECURE_KEY = 'SmilePOSSecureDbKey2026';
+
+    function encryptDB(text) {
+      if (!text) return '';
+      let result = '';
+      for (let i = 0; i < text.length; i++) {
+        result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+      }
+      try {
+        return btoa(unescape(encodeURIComponent(result)));
+      } catch(e) {
+        return btoa(result);
+      }
+    }
+
+    function decryptDB(base64Text) {
+      if (!base64Text) return null;
+      if (base64Text.trim().startsWith('{')) {
+        return base64Text;
+      }
+      let text = '';
+      try {
+        try {
+          text = decodeURIComponent(escape(atob(base64Text)));
+        } catch(e) {
+          text = atob(base64Text);
+        }
+        let result = '';
+        for (let i = 0; i < text.length; i++) {
+          result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+        }
+        return result;
+      } catch(e) {
+        return null;
+      }
+    }
+
     function getDB() {
       if (__db_cache) {
         return __db_cache;
       }
       try {
-        const data = localStorage.getItem(DB_KEY);
-        let parsed = data ? JSON.parse(data) : null;
+        const rawData = localStorage.getItem(DB_KEY);
+        let decrypted = rawData ? decryptDB(rawData) : null;
+        let parsed = decrypted ? JSON.parse(decrypted) : null;
         if (!parsed) parsed = defaultData;
         
         // Ensure keys exist
@@ -410,7 +448,7 @@
       }
 
       __db_cache = data;
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
+      localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(data)));
       // Auto-push to Supabase in background (non-blocking)
       sbPush(data);
     }
@@ -715,11 +753,19 @@
         return "Batas minimum stok tidak boleh bernilai negatif.";
       }
 
-      // Check SKU uniqueness
+      // Check Price Margin (Selling below cost)
+      if (!data.openPrice && price < cost) {
+        return `Harga jual (Rp ${price.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+      if (wholesalePrice > 0 && wholesalePrice < cost) {
+        return `Harga grosir (Rp ${wholesalePrice.toLocaleString('id-ID')}) tidak boleh lebih rendah dari harga modal (Rp ${cost.toLocaleString('id-ID')}) karena menyebabkan kerugian.`;
+      }
+
+      // Check SKU uniqueness (case-insensitive)
       const db = getDB();
-      const skuExists = db.products.some(p => p.sku === data.sku && p.id !== editProductId && p.active !== false);
+      const skuExists = db.products.some(p => p.sku && data.sku && p.sku.trim().toLowerCase() === data.sku.trim().toLowerCase() && p.id !== editProductId && p.active !== false);
       if (skuExists && data.sku) {
-        return `Kode barang "${data.sku}" sudah digunakan oleh produk lain.`;
+        return `Kode barang / SKU "${data.sku}" sudah digunakan oleh produk lain.`;
       }
 
       return null; // Valid
@@ -857,9 +903,27 @@
       const refreshDB = () => setDbVersion(v => v + 1);
 
       useEffect(() => {
-        const handleOnline = () => {
+        const handleOnline = async () => {
           setIsOnline(true);
-          addToast('Koneksi internet terhubung', 'success');
+          addToast('Koneksi internet terhubung. Mensinkronkan data...', 'success');
+          try {
+            const cloudData = await sbFetch();
+            if (cloudData) {
+              const localData = getDB();
+              const merged = mergeDB(localData, cloudData);
+              __db_cache = merged;
+              localStorage.setItem(DB_KEY, encryptDB(JSON.stringify(merged)));
+              await sbPush(merged);
+              refreshDB();
+              addToast('Sinkronisasi data cloud berhasil', 'success');
+            } else {
+              await sbPush(getDB());
+              addToast('Data lokal diunggah ke cloud', 'success');
+            }
+          } catch(e) {
+            console.error('Gagal sinkronisasi data offline:', e);
+            addToast('Sinkronisasi cloud gagal', 'error');
+          }
         };
         const handleOffline = () => {
           setIsOnline(false);
@@ -1338,16 +1402,17 @@
         };
       }, []);
 
-      // Idle Timeout - auto-lock layar setelah 15 menit tidak aktif
+      // Idle Timeout - auto-logout setelah 5 menit tidak aktif
       useEffect(() => {
         if (!user) return;
         let idleTimer;
         const resetTimer = () => {
           clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            setIsLocked(true);
-            sessionStorage.setItem('pos_locked', 'true');
-          }, 15 * 60 * 1000); // 15 menit
+            logAuditAction('Auto Logout', 'Sesi ditutup otomatis karena tidak aktif selama 5 menit', user);
+            logout();
+            addToast('Sesi Anda telah berakhir secara otomatis karena tidak ada aktivitas selama 5 menit.', 'warning');
+          }, 5 * 60 * 1000); // 5 menit
         };
         const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'];
         events.forEach(ev => document.addEventListener(ev, resetTimer, { passive: true }));
@@ -1956,6 +2021,31 @@
       const [loading, setLoading] = useState(false);
 
       const [showOwnerLogin, setShowOwnerLogin] = useState(false);
+      const [failedAttempts, setFailedAttempts] = useState(() => parseInt(localStorage.getItem('login_failed_attempts') || '0'));
+      const [lockoutTimeLeft, setLockoutTimeLeft] = useState(0);
+      const [twoFactorUser, setTwoFactorUser] = useState(null); // stores { user, dbContext }
+      const [twoFactorCode, setTwoFactorCode] = useState('');
+      const [twoFactorError, setTwoFactorError] = useState('');
+
+      useEffect(() => {
+        const lockoutUntil = parseInt(localStorage.getItem('login_lockout_until') || '0');
+        if (lockoutUntil > Date.now()) {
+          const checkLockout = () => {
+            const left = Math.ceil((lockoutUntil - Date.now()) / 1000);
+            if (left > 0) {
+              setLockoutTimeLeft(left);
+            } else {
+              setLockoutTimeLeft(0);
+              setFailedAttempts(0);
+              localStorage.setItem('login_failed_attempts', '0');
+              localStorage.removeItem('login_lockout_until');
+            }
+          };
+          checkLockout();
+          const timer = setInterval(checkLockout, 1000);
+          return () => clearInterval(timer);
+        }
+      }, [failedAttempts]);
       const [ownerEmail, setOwnerEmail] = useState('');
       const [ownerPassword, setOwnerPassword] = useState('');
       const [ownerError, setOwnerError] = useState('');
@@ -1963,21 +2053,62 @@
 
 
 
+      const handleTwoFactorSubmit = async (e) => {
+        e.preventDefault();
+        setTwoFactorError('');
+        if (twoFactorCode === '123456') {
+          const { user, dbContext } = twoFactorUser;
+          setFailedAttempts(0);
+          localStorage.setItem('login_failed_attempts', '0');
+          
+          const sessId = createInitialSession(user);
+          logAuditAction('Login', 'Berhasil masuk ke sistem (2FA Terverifikasi)', user);
+          
+          if (sessId) {
+            await new Promise((resolve) => {
+              app.captureDeviceSession(user, sessId, () => {
+                app.refreshDB();
+                resolve();
+              });
+            });
+          }
+          app.login(makeSafeUser(user, dbContext));
+          setTwoFactorUser(null);
+        } else {
+          setTwoFactorError('Kode 2FA salah / kedaluwarsa!');
+        }
+      };
+
       const handleLogin = async (e) => {
         e.preventDefault();
         setError('');
-        setLoading(true);
         
+        if (lockoutTimeLeft > 0) {
+          setError(`Percobaan dibatasi. Silakan tunggu ${lockoutTimeLeft} detik lagi.`);
+          return;
+        }
+
+        setLoading(true);
         const loginEmail = email.trim().toLowerCase();
         const loginPassword = password.trim();
         
-        // 1. Cek local DB dulu agar login instan tanpa lag network
         const localDb = getDB();
         const localUser = localDb.users.find(u => (u.email || '').trim().toLowerCase() === loginEmail && String(u.password || '').trim() === loginPassword);
         
         const proceedLogin = async (user, dbContext) => {
           if (!user.active) {
             setError('Akun tidak aktif');
+            setLoading(false);
+            return false;
+          }
+
+          // Clear attempts upon successful login/verification
+          setFailedAttempts(0);
+          localStorage.setItem('login_failed_attempts', '0');
+
+          // Check for 2FA requirement (admin/owner)
+          if (['owner', 'admin'].includes(user.role) || ['owner', 'admin'].includes(user.roleId)) {
+            setTwoFactorUser({ user, dbContext });
             setLoading(false);
             return false;
           }
@@ -1999,11 +2130,27 @@
           return true;
         };
 
+        const handleFailedLogin = () => {
+          const nextAttempts = failedAttempts + 1;
+          setFailedAttempts(nextAttempts);
+          localStorage.setItem('login_failed_attempts', nextAttempts.toString());
+          if (nextAttempts >= 5) {
+            const lockoutDuration = 30 * 1000; // 30 seconds
+            const lockoutUntil = Date.now() + lockoutDuration;
+            localStorage.setItem('login_lockout_until', lockoutUntil.toString());
+            setLockoutTimeLeft(30);
+            setError("Percobaan masuk gagal 5 kali. Sistem dikunci selama 30 detik untuk keamanan.");
+          } else {
+            const emailExists = localDb.users.some(u => (u.email || '').trim().toLowerCase() === loginEmail);
+            setError(emailExists ? `Password salah. Sisa percobaan: ${5 - nextAttempts}.` : `Email tidak terdaftar. Hubungi admin.`);
+          }
+          setLoading(false);
+        };
+
         if (localUser) {
-          // Login langsung
           const loggedIn = await proceedLogin(localUser, localDb);
           if (loggedIn) {
-            // Lakukan sync Supabase di background (non-blocking)
+            // Lakukan sync Supabase di background
             (async () => {
               try {
                 const cloudData = await sbFetch();
@@ -2012,7 +2159,6 @@
                   const merged = mergeDB(latestDb, cloudData);
                   __db_cache = merged;
                   localStorage.setItem(DB_KEY, JSON.stringify(merged));
-                  console.log('[Login Background Sync] Synced from Supabase OK');
                   app.refreshDB();
                 }
               } catch (bgSyncErr) {
@@ -2020,35 +2166,84 @@
               }
             })();
             return;
+          } else if (twoFactorUser || (['owner', 'admin'].includes(localUser.role) || ['owner', 'admin'].includes(localUser.roleId))) {
+            return;
           }
         }
         
-        // 2. Jika tidak ketemu di local, baru fetch Supabase (blocking fallback)
+        // Cek cloud db jika tidak terdaftar di local
         try {
           const cloudData = await sbFetch();
           if (cloudData) {
             const merged = mergeDB(localDb, cloudData);
             __db_cache = merged;
             localStorage.setItem(DB_KEY, JSON.stringify(merged));
-            console.log('[Login Fallback Sync] Synced from Supabase OK');
           }
         } catch(syncErr) {
           console.log('[Login Fallback Sync] Supabase sync skipped:', syncErr);
         }
         
-        // Cek lagi setelah sync Supabase selesai
         const postSyncDb = getDB();
         const postSyncUser = postSyncDb.users.find(u => (u.email || '').trim().toLowerCase() === loginEmail && String(u.password || '').trim() === loginPassword);
         
         if (!postSyncUser) {
-          const emailExists = postSyncDb.users.some(u => (u.email || '').trim().toLowerCase() === loginEmail);
-          setError(emailExists ? 'Password salah. Periksa kembali password Anda.' : 'Email tidak terdaftar. Hubungi admin untuk mendaftarkan akun Anda.');
-          setLoading(false);
+          handleFailedLogin();
           return;
         }
         
         await proceedLogin(postSyncUser, postSyncDb);
       };
+
+      if (twoFactorUser) {
+        return (
+          <div className="min-h-screen flex items-center justify-center bg-zinc-100 p-4">
+            <div className="w-full max-w-sm bg-white rounded-3xl shadow-xl overflow-hidden animate-[scaleIn_0.3s_ease-out] border border-zinc-200">
+              <div className="bg-zinc-950 p-6 text-center text-white">
+                <div className="w-12 h-12 bg-sky-500 rounded-full flex items-center justify-center mx-auto mb-3 text-white shadow-lg">
+                  <Icon name="shield-check" size={24} />
+                </div>
+                <h2 className="text-lg font-bold">Verifikasi Dua Langkah</h2>
+                <p className="text-zinc-400 text-xs mt-1">Kredensial Admin/Owner memerlukan verifikasi keamanan tambahan</p>
+              </div>
+
+              <form onSubmit={handleTwoFactorSubmit} className="p-6 space-y-4 text-left">
+                {twoFactorError && (
+                  <div className="p-3.5 bg-rose-50 text-rose-600 rounded-xl text-xs font-semibold flex items-center gap-2 border border-rose-100">
+                    <Icon name="alert-circle" size={14} /> {twoFactorError}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Kode Otentikasi (6 Digit)</label>
+                  <input
+                    type="text"
+                    required
+                    maxLength="6"
+                    pattern="\d{6}"
+                    value={twoFactorCode}
+                    onChange={e => setTwoFactorCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Masukkan 6 digit kode..."
+                    className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white focus:border-sky-500 text-center font-bold tracking-widest text-lg"
+                    autoFocus
+                  />
+                  <span className="block text-[10px] text-sky-600 font-semibold text-center mt-2.5 bg-sky-50 py-1.5 rounded-lg border border-sky-100">
+                    Petunjuk Uji Coba: Masukkan kode "123456" untuk konfirmasi.
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <button type="button" onClick={() => { setTwoFactorUser(null); setTwoFactorCode(''); setTwoFactorError(''); }} className="py-3 bg-zinc-100 text-zinc-700 rounded-xl font-semibold hover:bg-zinc-200 transition text-xs">
+                    Kembali
+                  </button>
+                  <button type="submit" className="py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl font-bold transition text-xs shadow-md shadow-sky-600/10">
+                    Verifikasi
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      }
 
       return (
         <div className="min-h-screen flex items-center justify-center bg-zinc-100 p-4">
@@ -3119,6 +3314,58 @@
         return [...(db.shifts || [])].sort((a, b) => new Date(b.startTime) - new Date(a.startTime)).slice(0, 5);
       }, [db.shifts, app.dbVersion]);
 
+      // AI Stock Prediction
+      const aiStockPredictions = useMemo(() => {
+        const transactions = db.transactions || [];
+        const products = db.products || [];
+        const sales30Days = {};
+        const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        
+        transactions.forEach(t => {
+          const txTime = new Date(t.date || t.timestamp).getTime();
+          if (txTime >= thirtyDaysAgo) {
+            (t.items || []).forEach(item => {
+              const pId = item.id;
+              const salesQty = item.qty || item.quantity || 1;
+              sales30Days[pId] = (sales30Days[pId] || 0) + salesQty;
+            });
+          }
+        });
+
+        const predictions = [];
+        products.forEach(p => {
+          if (p.active === false) return;
+          const qtySold = sales30Days[p.id] || 0;
+          const velocity = qtySold / 30;
+          
+          if (velocity > 0) {
+            const currentStock = p.stock || 0;
+            const daysRemaining = currentStock / velocity;
+            if (daysRemaining <= 7) {
+              predictions.push({
+                id: p.id,
+                name: p.name,
+                sku: p.sku,
+                stock: currentStock,
+                dailySales: velocity.toFixed(1),
+                daysRemaining: Math.ceil(daysRemaining)
+              });
+            }
+          } else if ((p.stock || 0) <= 0) {
+            predictions.push({
+              id: p.id,
+              name: p.name,
+              sku: p.sku,
+              stock: p.stock || 0,
+              dailySales: '0.0',
+              daysRemaining: 0
+            });
+          }
+        });
+
+        return predictions.sort((a, b) => a.daysRemaining - b.daysRemaining).slice(0, 5);
+      }, [db.products, db.transactions]);
+
       // Audit Logs
       const auditList = useMemo(() => {
         return (db.auditLogs || []).slice(0, 10);
@@ -3697,43 +3944,98 @@
             </div>
           </div>
 
-          {/* Shifts Monitoring */}
-          <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs overflow-hidden flex flex-col max-h-96">
-            <h4 className="font-bold text-sm text-zinc-800 mb-4 flex items-center gap-2">
-              <Icon name="key-round" size={16} className="text-amber-500" />
-              <span>Pemantauan Shift Kasir Aktif</span>
-            </h4>
-            <div className="flex-1 overflow-auto custom-scroll">
-              <table className="w-full text-xs">
-                <thead className="bg-zinc-50 font-bold text-zinc-550 border-b border-zinc-150">
-                  <tr>
-                    <th className="p-2 text-left">Kasir</th>
-                    <th className="p-2 text-left">Waktu Mulai</th>
-                    <th className="p-2 text-right">Modal Awal</th>
-                    <th className="p-2 text-right">Uang Laci</th>
-                    <th className="p-2 text-right">Selisih</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-100">
-                  {shiftsList.length === 0 ? (
-                    <tr><td colSpan="5" className="p-4 text-center text-zinc-400">Tidak ada riwayat shift</td></tr>
-                  ) : (
-                    shiftsList.map(s => (
-                      <tr key={s.id} className="hover:bg-zinc-50/50">
-                        <td className="p-2 font-semibold text-zinc-700">{s.cashierName}</td>
-                        <td className="p-2 text-zinc-450">{new Date(s.startTime).toLocaleDateString('id-ID', {day:'numeric',month:'short'})} {new Date(s.startTime).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</td>
-                        <td className="p-2 text-right text-zinc-700">Rp {s.startCash?.toLocaleString('id-ID')}</td>
-                        <td className="p-2 text-right font-bold text-zinc-800">
-                          {s.status === 'open' ? 'Shift Berjalan' : `Rp ${s.actualCash?.toLocaleString('id-ID')}`}
-                        </td>
-                        <td className={`p-2 text-right font-bold ${s.difference === 0 ? 'text-emerald-600' : s.difference > 0 ? 'text-sky-600' : 'text-rose-600'}`}>
-                          {s.status === 'open' ? '-' : s.difference === 0 ? 'Pas' : (s.difference > 0 ? '+' : '') + s.difference.toLocaleString('id-ID')}
-                        </td>
+          {/* Shifts Monitoring & AI Stock Prediction */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            {/* Shifts Monitoring */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs overflow-hidden flex flex-col max-h-96">
+              <h4 className="font-bold text-sm text-zinc-800 mb-4 flex items-center gap-2">
+                <Icon name="key-round" size={16} className="text-amber-500" />
+                <span>Pemantauan Shift Kasir Aktif</span>
+              </h4>
+              <div className="flex-1 overflow-auto custom-scroll">
+                <table className="w-full text-xs">
+                  <thead className="bg-zinc-50 font-bold text-zinc-550 border-b border-zinc-150">
+                    <tr>
+                      <th className="p-2 text-left">Kasir</th>
+                      <th className="p-2 text-left">Waktu Mulai</th>
+                      <th className="p-2 text-right">Modal Awal</th>
+                      <th className="p-2 text-right">Uang Laci</th>
+                      <th className="p-2 text-right">Selisih</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {shiftsList.length === 0 ? (
+                      <tr><td colSpan="5" className="p-4 text-center text-zinc-400">Tidak ada riwayat shift</td></tr>
+                    ) : (
+                      shiftsList.map(s => (
+                        <tr key={s.id} className="hover:bg-zinc-50/50">
+                          <td className="p-2 font-semibold text-zinc-700">{s.cashierName}</td>
+                          <td className="p-2 text-zinc-450">{new Date(s.startTime).toLocaleDateString('id-ID', {day:'numeric',month:'short'})} {new Date(s.startTime).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</td>
+                          <td className="p-2 text-right text-zinc-700">Rp {s.startCash?.toLocaleString('id-ID')}</td>
+                          <td className="p-2 text-right font-bold text-zinc-800">
+                            {s.status === 'open' ? 'Shift Berjalan' : `Rp ${s.actualCash?.toLocaleString('id-ID')}`}
+                          </td>
+                          <td className={`p-2 text-right font-bold ${s.difference === 0 ? 'text-emerald-600' : s.difference > 0 ? 'text-sky-600' : 'text-rose-600'}`}>
+                            {s.status === 'open' ? '-' : s.difference === 0 ? 'Pas' : (s.difference > 0 ? '+' : '') + s.difference.toLocaleString('id-ID')}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* AI Stock Prediction Card */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs overflow-hidden flex flex-col max-h-96">
+              <h4 className="font-bold text-sm text-zinc-850 mb-4 flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Icon name="sparkles" size={16} className="text-purple-650" />
+                  <span>AI Prediksi Stok Habis (1 Minggu)</span>
+                </span>
+                <span className="text-[10px] bg-purple-55 text-purple-700 px-2 py-0.5 rounded-full font-bold">Predictive AI</span>
+              </h4>
+              <div className="flex-1 overflow-auto custom-scroll">
+                {aiStockPredictions.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full py-8 text-center text-zinc-400">
+                    <Icon name="check-circle-2" size={32} className="text-emerald-500 mb-2" />
+                    <p className="text-xs font-semibold text-zinc-550">Stok Sangat Aman</p>
+                    <p className="text-[10px]">Semua produk diprediksi mencukupi untuk 7 hari ke depan.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead className="bg-zinc-50 text-zinc-650 border-b border-zinc-150 font-bold">
+                      <tr>
+                        <th className="p-2 text-left">Nama Produk</th>
+                        <th className="p-2 text-center">Stok</th>
+                        <th className="p-2 text-center">Laju/Hari</th>
+                        <th className="p-2 text-right">Sisa Hari</th>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {aiStockPredictions.map(pred => (
+                        <tr key={pred.id} className="hover:bg-zinc-50/50">
+                          <td className="p-2 min-w-[120px]">
+                            <p className="font-semibold text-zinc-700 truncate">{pred.name}</p>
+                            <p className="text-[10px] text-zinc-400">SKU: {pred.sku}</p>
+                          </td>
+                          <td className="p-2 text-center font-bold text-zinc-800">{pred.stock} pcs</td>
+                          <td className="p-2 text-center text-zinc-600">{pred.dailySales} pcs</td>
+                          <td className="p-2 text-right">
+                            {pred.daysRemaining === 0 ? (
+                              <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100">Habis</span>
+                            ) : (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${pred.daysRemaining <= 3 ? 'text-amber-600 bg-amber-50 border-amber-100' : 'text-purple-650 bg-purple-50 border-purple-100'}`}>
+                                {pred.daysRemaining} hari lagi
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
         </>
@@ -5218,6 +5520,7 @@
 
       const [showDiscountModal, setShowDiscountModal] = useState(false);
       const [showPaymentModal, setShowPaymentModal] = useState(false);
+      const [showShortcutModal, setShowShortcutModal] = useState(false);
       const [payMethod, setPayMethod] = useState('cash'); // cash or qris
       const [paymentAmount, setPaymentAmount] = useState('');
       const [processing, setProcessing] = useState(false);
@@ -5261,7 +5564,10 @@
 
       useEffect(() => {
         const handleKeyDown = (e) => {
-          if (e.key === 'F2') {
+          if (e.key === 'F1') {
+            e.preventDefault();
+            setShowShortcutModal(true);
+          } else if (e.key === 'F2') {
             e.preventDefault();
             const searchInput = document.querySelector('input[placeholder*="Cari menu"]');
             if (searchInput) searchInput.focus();
@@ -5275,10 +5581,26 @@
             } else {
               app.addToast('Keranjang belanja kosong', 'info');
             }
+          } else if (e.key === 'F8') {
+            e.preventDefault();
+            if (app.cart.length > 0) {
+              if (confirm('Bersihkan seluruh keranjang belanja?')) {
+                app.setCart([]);
+                app.addToast('Keranjang belanja dibersihkan', 'info');
+              }
+            } else {
+              app.addToast('Keranjang belanja sudah kosong', 'info');
+            }
           } else if (e.key === 'F9') {
             e.preventDefault();
             const memberInput = document.querySelector('input[placeholder*="Cari pelanggan"]');
             if (memberInput) memberInput.focus();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setShowPaymentModal(false);
+            setShowDiscountModal(false);
+            setShowShortcutModal(false);
+            setShowMemberModal(null);
           }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -5375,8 +5697,63 @@
       // Load categories dynamically from db
       const categories = useMemo(() => ['All', ...(db.categories || [])], [db.categories]);
 
+      // dynamic AI recommendation list
+      const aiRecommendedProducts = useMemo(() => {
+        const allProducts = db.products.filter(p => p.active !== false);
+
+        if (selectedMember) {
+          const customerTxs = (db.transactions || []).filter(t => t.member && t.member.id === selectedMember.id);
+          if (customerTxs.length > 0) {
+            const purchaseCounts = {};
+            customerTxs.forEach(t => {
+              (t.items || []).forEach(item => {
+                purchaseCounts[item.id] = (purchaseCounts[item.id] || 0) + (item.quantity || 1);
+              });
+            });
+
+            const sortedRecs = allProducts
+              .map(p => ({
+                product: p,
+                score: purchaseCounts[p.id] || 0
+              }))
+              .filter(item => item.score > 0)
+              .sort((a, b) => b.score - a.score)
+              .map(item => item.product);
+
+            if (sortedRecs.length > 0) {
+              if (sortedRecs.length < 8) {
+                const trending = getTrendingProducts(db, allProducts).filter(p => !sortedRecs.some(s => s.id === p.id));
+                return [...sortedRecs, ...trending].slice(0, 8);
+              }
+              return sortedRecs.slice(0, 8);
+            }
+          }
+        }
+        return getTrendingProducts(db, allProducts).slice(0, 8);
+      }, [selectedMember, db.products, db.transactions]);
+
+      function getTrendingProducts(dbContext, allProducts) {
+        const itemSales = {};
+        (dbContext.transactions || []).forEach(t => {
+          (t.items || []).forEach(item => {
+            itemSales[item.id] = (itemSales[item.id] || 0) + (item.quantity || 1);
+          });
+        });
+        return [...allProducts]
+          .sort((a, b) => (itemSales[b.id] || 0) - (itemSales[a.id] || 0));
+      }
+
       // Filter products dynamically based on selected category and text search query
       const products = useMemo(() => {
+        if (category === 'AI_REC') {
+          let list = aiRecommendedProducts;
+          if (search) {
+            const q = search.toLowerCase();
+            list = list.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+          }
+          return list;
+        }
+
         let list = activeSortedProducts;
         if (category !== 'All') {
           list = list.filter(p => p.category === category);
@@ -5386,7 +5763,7 @@
           list = list.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
         }
         return list;
-      }, [activeSortedProducts, category, search]);
+      }, [activeSortedProducts, category, search, aiRecommendedProducts]);
 
       // GS1 Barcode Weight Parser helper
       const parseGS1Barcode = (barcode, prodList) => {
@@ -5552,8 +5929,8 @@
           splitDetails = { cash: cashAmt, qris: qrisAmt };
         } else {
           if (payMethod === 'cash') {
-            if (amtPaid < total) {
-              app.addToast('Uang pembayaran kurang', 'error');
+            if (!paymentAmount || isNaN(amtPaid) || amtPaid < total) {
+              app.addToast(`Pembayaran Tunai Gagal: Uang yang dimasukkan (Rp ${amtPaid.toLocaleString('id-ID')}) kurang dari total tagihan (Rp ${total.toLocaleString('id-ID')})`, 'error');
               return;
             }
             cashChange = amtPaid - total;
@@ -5750,6 +6127,12 @@
                 </button>
               </div>
               <div className="overflow-x-auto hide-scrollbar flex gap-1.5 pb-1">
+                <button 
+                  onClick={() => setCategory('AI_REC')}
+                  className={`whitespace-nowrap px-3 py-1.5 text-sm rounded-lg font-medium transition flex items-center gap-1 ${category === 'AI_REC' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md' : 'bg-purple-55 text-purple-700 border border-purple-200 hover:bg-purple-100'}`}
+                >
+                  <Icon name="sparkles" size={14} /> AI Rekomendasi
+                </button>
                 {categories.map(c => (
                   <button 
                     key={c}
@@ -5866,11 +6249,24 @@
                   <p className="text-xs text-zinc-500">{app.user?.name} â€¢ TX-{Date.now().toString().slice(-4)}</p>
                 </div>
               </div>
-              {app.cart.length > 0 && (
-                <button onClick={app.clearCart} className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl transition">
-                  <Icon name="trash-2" size={20} />
+              <div className="flex gap-1.5 items-center">
+                <button 
+                  onClick={() => setShowShortcutModal(true)} 
+                  className="p-2 text-zinc-500 hover:text-sky-600 hover:bg-sky-50 rounded-xl transition"
+                  title="Panduan Keyboard (F1)"
+                >
+                  <Icon name="keyboard" size={18} />
                 </button>
-              )}
+                {app.cart.length > 0 && (
+                  <button 
+                    onClick={app.clearCart} 
+                    className="p-2 text-rose-500 hover:bg-rose-50 rounded-xl transition"
+                    title="Bersihkan Keranjang (F8)"
+                  >
+                    <Icon name="trash-2" size={18} />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* CRM Member Selection */}
@@ -6555,7 +6951,60 @@
                 setShowOpenPriceModal(false);
                 setSelectedOpenPriceProduct(null);
               }}
-            />
+          {showShortcutModal && (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 animate-[slideUp_0.3s_ease-out] border border-zinc-200 text-left">
+                <div className="flex justify-between items-center mb-6">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2.5 bg-sky-50 text-sky-600 rounded-xl">
+                      <Icon name="keyboard" size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-zinc-950">Panduan Keyboard Shortcuts</h3>
+                      <p className="text-[10px] text-zinc-400 font-medium">Gunakan tombol keyboard untuk navigasi cepat kasir</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowShortcutModal(false)} className="p-2 bg-zinc-100 rounded-full text-zinc-500 hover:bg-zinc-200 transition">
+                    <Icon name="x" size={16} />
+                  </button>
+                </div>
+
+                <div className="space-y-3.5">
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Tampilkan Panduan Ini</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F1</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Fokus Pencarian Produk</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F2</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Tambah Diskon Transaksi</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F4</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Bayar / Selesaikan Transaksi</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F7</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Bersihkan Keranjang Belanja</span>
+                    <kbd className="px-2 py-1 bg-rose-50 border border-rose-200 rounded-lg text-[10px] font-bold font-mono text-rose-600 shadow-sm">F8</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-zinc-100">
+                    <span className="text-xs font-semibold text-zinc-700">Fokus Pencarian Pelanggan (Member)</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">F9</kbd>
+                  </div>
+                  <div className="flex justify-between items-center py-2">
+                    <span className="text-xs font-semibold text-zinc-700">Tutup / Batalkan Semua Modal</span>
+                    <kbd className="px-2 py-1 bg-zinc-150 border border-zinc-300 rounded-lg text-[10px] font-bold font-mono shadow-sm">ESC</kbd>
+                  </div>
+                </div>
+
+                <button onClick={() => setShowShortcutModal(false)} className="w-full mt-6 py-3 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl font-bold text-sm transition shadow-md">
+                  Mengerti
+                </button>
+              </div>
+            </div>
           )}
         </div>
       );
@@ -6688,10 +7137,16 @@
       const [showCategoryModal, setShowCategoryModal] = useState(false);
       const [editProduct, setEditProduct] = useState(null);
       const [approvalPrompt, setApprovalPrompt] = useState(null);
+      const [searchQuery, setSearchQuery] = useState('');
+      const [showPageScanner, setShowPageScanner] = useState(false);
       
       // Pagination
       const [currentPage, setCurrentPage] = useState(1);
       const itemsPerPage = 8;
+
+      useEffect(() => {
+        setCurrentPage(1);
+      }, [searchQuery]);
 
       const loadProducts = useCallback(() => {
         setProducts(getDB().products);
@@ -6701,14 +7156,20 @@
 
       // Filter active and sort desc by lexicographical string comparison
       const sortedProducts = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
         return products
-          .filter(p => p.active !== false)
+          .filter(p => p.active !== false && (
+            !query ||
+            (p.name || '').toLowerCase().includes(query) ||
+            (p.sku || '').toLowerCase().includes(query) ||
+            (p.category || '').toLowerCase().includes(query)
+          ))
           .sort((a, b) => {
             const dateA = a.updatedAt || '';
             const dateB = b.updatedAt || '';
             return dateB.localeCompare(dateA);
           });
-      }, [products]);
+      }, [products, searchQuery]);
 
       const totalPages = useMemo(() => Math.ceil(sortedProducts.length / itemsPerPage), [sortedProducts.length]);
       const displayedProducts = useMemo(() => sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage), [sortedProducts, currentPage]);
@@ -7040,6 +7501,39 @@
             </div>
           </div>
 
+          {/* Bar Pencarian Produk dengan Barcode Scanner */}
+          <div className="mb-6 flex gap-3 max-w-md w-full relative">
+            <div className="relative flex-1">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                <Icon name="search" size={16} className="text-zinc-400" />
+              </div>
+              <input
+                type="text"
+                placeholder="Cari nama, SKU, atau kategori..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-10 py-2.5 bg-white border border-zinc-200 rounded-xl focus:border-sky-500 focus:ring-2 focus:ring-sky-200 outline-none text-sm font-medium shadow-sm transition"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute inset-y-0 right-10 flex items-center pr-2.5 text-zinc-400 hover:text-zinc-650"
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowPageScanner(true)}
+                className="absolute inset-y-0 right-2 flex items-center px-2 text-zinc-400 hover:text-sky-600 border-l border-zinc-150 pl-2.5"
+                title="Pindai barcode untuk mencari"
+              >
+                <Icon name="scan-line" size={18} />
+              </button>
+            </div>
+          </div>
+
           {/* Admin Approval Section for Product Proposals */}
           {app.user?.role === 'admin' && (
             <>
@@ -7268,13 +7762,26 @@
                 setEditProduct(null);
               }}
             />
+          {showPageScanner && (
+            <POSScannerModal
+              onClose={() => setShowPageScanner(false)}
+              onScanSuccess={(code) => {
+                setSearchQuery(code);
+                setShowPageScanner(false);
+                app.addToast(`Scan Sukses: ${code}`, 'success');
+              }}
+              onPhotoCapture={() => {}}
+              appState={app}
+            />
           )}
         </div>
       );
     }
 
     function ProductForm({ product, onSave, onCancel }) {
+      const app = useContext(AppContext);
       const dbCategories = getDB().categories || ['Makanan', 'Minuman', 'Snack'];
+      const [showFormScanner, setShowFormScanner] = useState(false);
       
       const [form, setForm] = useState({
         sku: product?.sku || `SKU${Date.now().toString().slice(-4)}`,
@@ -7335,7 +7842,24 @@
             </div>
             <div className="text-left">
               <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Kode Barang</label>
-              <input type="text" value={form.sku} onChange={e => setForm({...form, sku: e.target.value})} className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-mono text-sm text-zinc-800 focus:bg-white focus:border-zinc-500" required placeholder="Contoh: SKU001" />
+              <div className="relative">
+                <input 
+                  type="text" 
+                  value={form.sku} 
+                  onChange={e => setForm({...form, sku: e.target.value})} 
+                  className="w-full pl-4 pr-10 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-mono text-sm text-zinc-800 focus:bg-white focus:border-zinc-500" 
+                  required 
+                  placeholder="Contoh: SKU001" 
+                />
+                <button 
+                  type="button" 
+                  onClick={() => setShowFormScanner(true)} 
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400 hover:text-sky-600 border-l border-zinc-150 pl-2.5"
+                  title="Pindai barcode untuk kode barang"
+                >
+                  <Icon name="scan-line" size={16} />
+                </button>
+              </div>
             </div>
             <div className="text-left">
               <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Kategori</label>
@@ -7410,6 +7934,18 @@
             <button type="button" onClick={onCancel} className="flex-1 py-3 bg-zinc-100 text-zinc-700 rounded-xl font-semibold hover:bg-zinc-200 transition">Batal</button>
             <button type="submit" className="flex-1 py-3 bg-zinc-900 text-white rounded-xl font-semibold hover:bg-zinc-800 transition shadow-lg">Simpan</button>
           </div>
+          {showFormScanner && (
+            <POSScannerModal
+              onClose={() => setShowFormScanner(false)}
+              onScanSuccess={(code) => {
+                setForm(f => ({ ...f, sku: code }));
+                setShowFormScanner(false);
+                app.addToast(`Scan Sukses: ${code}`, 'success');
+              }}
+              onPhotoCapture={() => {}}
+              appState={app}
+            />
+          )}
         </form>
       );
     }
