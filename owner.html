@@ -1,11 +1,11 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smile POS - Owner Dashboard</title>
   <link rel="icon" type="image/jpeg" href="./logo.jpg">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -117,11 +117,29 @@
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     
+    /* Hide input spinner arrows for Chrome, Safari, Edge, Opera */
+    input::-webkit-outer-spin-button,
+    input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    /* Hide input spinner arrows for Firefox */
+    input[type=number] {
+      -moz-appearance: textfield;
+    }
+    
     html, body { margin: 0; min-height: 100%; background-color: #f4f4f5; }
     body { -webkit-tap-highlight-color: transparent; }
     .custom-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
     .custom-scroll::-webkit-scrollbar-track { background: transparent; }
     .custom-scroll::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 10px; }
+    
+    .custom-tab-scroll::-webkit-scrollbar { height: 4px; }
+    .custom-tab-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 99px; }
+    .custom-tab-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+    .custom-tab-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    .custom-tab-scroll { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
+
     .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -148,11 +166,16 @@
   </style>
 </head>
 <body class="text-zinc-800 antialiased selection:bg-sky-200">
+
   <div id="root"></div>
 
   <!-- Inline JSX script compiled with Babel and cached locally -->
   <script type="text/jsx-template" id="main-app-jsx">
     const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
+
+    const performPageRedirect = (url) => {
+      window.location.href = url;
+    };
     if (typeof navigator !== 'undefined') { if (!navigator.mediaDevices) { try { Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); } }, configurable: true, writable: true }); } catch (e) { try { navigator.mediaDevices = { getUserMedia: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); } }; } catch(err) {} } } else if (!navigator.mediaDevices.getUserMedia) { try { Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); }, configurable: true, writable: true }); } catch (e) { try { navigator.mediaDevices.getUserMedia = function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); }; } catch(err) {} } } }
     // ==================== ICONS COMPONENT ====================
     // Komponen aman untuk me-render Lucide icons di dalam React
@@ -170,17 +193,40 @@
       return <span ref={ref} className="inline-flex items-center justify-center"></span>;
     }
 
+    function UserAvatar({ name, role, className = "w-10 h-10" }) {
+      const initials = name?.substring(0, 2).toUpperCase() || 'US';
+      let gradientClass = 'from-zinc-150 to-zinc-250 text-zinc-700 border-zinc-350/60';
+      
+      if (role === 'owner') {
+        gradientClass = 'from-sky-400 to-indigo-500 text-white border-indigo-200/20';
+      } else if (role?.indexOf('admin') !== -1) {
+        gradientClass = 'from-violet-400 to-fuchsia-555 text-white border-violet-200/20';
+      } else if (role === 'cashier' || role === 'kasir') {
+        gradientClass = 'from-amber-400 to-orange-500 text-white border-orange-200/20';
+      } else if (role === 'keuangan' || role === 'finance') {
+        gradientClass = 'from-emerald-400 to-teal-500 text-white border-teal-200/20';
+      } else if (role === 'dapur') {
+        gradientClass = 'from-rose-400 to-red-500 text-white border-red-200/20';
+      }
+      
+      return (
+        <div className={`${className} rounded-2xl bg-gradient-to-br ${gradientClass} border flex items-center justify-center font-extrabold text-xs tracking-wider shadow-3xs`}>
+          {initials}
+        </div>
+      );
+    }
+
     // ==================== SUPABASE CONFIG ====================
     const SUPABASE_URL = 'https://xtqnofdbfxaknachrwdg.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_x-6siGxMwoVG3Buolx2hBA_WzV0yJUJ';
-    // NEVER use sb_secret key client-side â€” only use publishable key above
+    // NEVER use sb_secret key client-side — only use publishable key above
     let sbClient = null;
     try {
       if (window.supabase && window.supabase.createClient) {
         sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
           realtime: { params: { eventsPerSecond: 2 } }
         });
-        console.log('[Supabase] Client initialized OK â€” URL:', SUPABASE_URL);
+        console.log('[Supabase] Client initialized OK — URL:', SUPABASE_URL);
       }
     } catch(e) { console.error('[Supabase] Init error:', e); }
 
@@ -298,7 +344,7 @@
       }
     }
 
-    function getDB() {
+            function getDB() {
       if (__db_cache) {
         return __db_cache;
       }
@@ -313,6 +359,8 @@
         parsed.products = parsed.products || defaultData.products;
         parsed.transactions = parsed.transactions || defaultData.transactions;
         parsed.categories = parsed.categories || defaultData.categories;
+        parsed.chatHistory = parsed.chatHistory || [];
+        parsed.activityLogs = parsed.activityLogs || [];
         parsed.roles = parsed.roles || defaultData.roles;
         parsed.shifts = parsed.shifts || [];
         parsed.bypassRequests = parsed.bypassRequests || [];
@@ -327,6 +375,9 @@
         parsed.ownerNotifications = parsed.ownerNotifications || [];
         parsed.purchases = parsed.purchases || [];
         parsed.deletedUserIds = parsed.deletedUserIds || [];
+        parsed.deletedProductIds = parsed.deletedProductIds || [];
+        parsed.deletedPurchaseIds = parsed.deletedPurchaseIds || [];
+        parsed.clearedAt = parsed.clearedAt || {};
         
         // New workspace keys for sub-admins
         parsed.officeSupplies = parsed.officeSupplies || [];
@@ -357,6 +408,37 @@
           const deletedSet = new Set(parsed.deletedUserIds);
           parsed.users = parsed.users.filter(u => !deletedSet.has(u.id));
         }
+
+        // Always filter out permanently deleted products (tombstone enforcement)
+        if (parsed.deletedProductIds.length > 0) {
+          const deletedSet = new Set(parsed.deletedProductIds);
+          parsed.products = parsed.products.filter(p => !deletedSet.has(p.id));
+        }
+
+        // Always filter out permanently deleted purchases (tombstone enforcement)
+        if (parsed.deletedPurchaseIds.length > 0) {
+          const deletedSet = new Set(parsed.deletedPurchaseIds);
+          parsed.purchases = parsed.purchases.filter(p => !deletedSet.has(p.id));
+        }
+
+        // Filter out items older than clearedAt timestamps
+        const cleared = parsed.clearedAt || {};
+        const filterByClearedAt = (list = [], key) => {
+          if (!list || !cleared[key]) return list;
+          const clearTime = new Date(cleared[key]).getTime();
+          return list.filter(item => new Date(item.updatedAt || item.date || item.timestamp || 0).getTime() > clearTime);
+        };
+        parsed.products = filterByClearedAt(parsed.products, 'products');
+        parsed.purchases = filterByClearedAt(parsed.purchases, 'purchases');
+        parsed.transactions = filterByClearedAt(parsed.transactions, 'transactions');
+        parsed.shifts = filterByClearedAt(parsed.shifts, 'shifts');
+        parsed.cashierReports = filterByClearedAt(parsed.cashierReports, 'cashierReports');
+        parsed.crmLeads = filterByClearedAt(parsed.crmLeads, 'crmLeads');
+        parsed.members = filterByClearedAt(parsed.members, 'members');
+        parsed.deviceSessions = filterByClearedAt(parsed.deviceSessions, 'deviceSessions');
+        parsed.scans = filterByClearedAt(parsed.scans, 'scans');
+        parsed.activityLogs = filterByClearedAt(parsed.activityLogs, 'activityLogs');
+        parsed.auditLogs = filterByClearedAt(parsed.auditLogs, 'auditLogs');
 
         // Migrate products with timestamps and active status
         const nowStr = new Date().toISOString();
@@ -804,15 +886,35 @@
     }
 
     // Merge databases using Last-Write-Wins (LWW) with tombstone deletion tracking
-    function mergeDB(local, cloud) {
+            function mergeDB(local, cloud) {
       if (!cloud) return local;
       
+      // Merge clearedAt timestamps - take the latest for each collection
+      const mergedClearedAt = { ...(local.clearedAt || {}), ...(cloud.clearedAt || {}) };
+      const localCleared = local.clearedAt || {};
+      const cloudCleared = cloud.clearedAt || {};
+      Object.keys(cloudCleared).forEach(k => {
+        const localTime = new Date(localCleared[k] || 0).getTime();
+        const cloudTime = new Date(cloudCleared[k] || 0).getTime();
+        if (cloudTime > localTime) {
+          mergedClearedAt[k] = cloudCleared[k];
+        }
+      });
+
       // Merge deletedUserIds tombstone - union of both sides so deletions propagate
       const localDeleted = new Set(local.deletedUserIds || []);
       const cloudDeleted = new Set(cloud.deletedUserIds || []);
       const mergedDeletedIds = [...new Set([...localDeleted, ...cloudDeleted])];
 
-      const mergeList = (localList = [], cloudList = []) => {
+      const localDeletedProducts = new Set(local.deletedProductIds || []);
+      const cloudDeletedProducts = new Set(cloud.deletedProductIds || []);
+      const mergedDeletedProductIds = [...new Set([...localDeletedProducts, ...cloudDeletedProducts])];
+
+      const localDeletedPurchases = new Set(local.deletedPurchaseIds || []);
+      const cloudDeletedPurchases = new Set(cloud.deletedPurchaseIds || []);
+      const mergedDeletedPurchaseIds = [...new Set([...localDeletedPurchases, ...cloudDeletedPurchases])];
+
+      const mergeList = (localList = [], cloudList = [], collectionName = null) => {
         const map = new Map();
         localList.forEach(item => {
           map.set(item.id, item);
@@ -829,53 +931,74 @@
             }
           }
         });
-        return Array.from(map.values());
+        
+        let merged = Array.from(map.values());
+        
+        // Filter out items older than clearedAt timestamp of this collection
+        if (collectionName && mergedClearedAt[collectionName]) {
+          const clearTime = new Date(mergedClearedAt[collectionName]).getTime();
+          merged = merged.filter(item => new Date(item.updatedAt || item.date || item.timestamp || 0).getTime() > clearTime);
+        }
+        
+        return merged;
       };
 
-      // Filter out permanently deleted users from merged list
+      // Filter out permanently deleted items from merged lists
       const mergedDeletedSet = new Set(mergedDeletedIds);
-      const mergedUsers = mergeList(local.users, cloud.users).filter(u => !mergedDeletedSet.has(u.id));
+      const mergedUsers = mergeList(local.users, cloud.users, 'users').filter(u => !mergedDeletedSet.has(u.id));
+
+      const mergedDeletedProductSet = new Set(mergedDeletedProductIds);
+      const mergedProducts = mergeList(local.products, cloud.products, 'products').filter(p => !mergedDeletedProductSet.has(p.id));
+
+      const mergedDeletedPurchaseSet = new Set(mergedDeletedPurchaseIds);
+      const mergedPurchases = mergeList(local.purchases, cloud.purchases, 'purchases').filter(p => !mergedDeletedPurchaseSet.has(p.id));
 
       return {
         // Preserve migration flags from local (local is authoritative for migrations)
         userCleanupV4: local.userCleanupV4 || cloud.userCleanupV4 || false,
+        clearedAt: mergedClearedAt,
         deletedUserIds: mergedDeletedIds,
+        deletedProductIds: mergedDeletedProductIds,
+        deletedPurchaseIds: mergedDeletedPurchaseIds,
         users: mergedUsers,
-        products: mergeList(local.products, cloud.products),
-        transactions: mergeList(local.transactions, cloud.transactions),
+        products: mergedProducts,
+        purchases: mergedPurchases,
+        transactions: mergeList(local.transactions, cloud.transactions, 'transactions'),
         categories: cloud.categories || local.categories || defaultData.categories,
-        shifts: mergeList(local.shifts, cloud.shifts),
-        bypassRequests: mergeList(local.bypassRequests, cloud.bypassRequests),
-        approvedBypasses: mergeList(local.approvedBypasses, cloud.approvedBypasses),
-        scans: mergeList(local.scans, cloud.scans),
-        productProposals: mergeList(local.productProposals, cloud.productProposals),
-        adminApprovals: mergeList(local.adminApprovals, cloud.adminApprovals),
-        members: mergeList(local.members, cloud.members),
-        cashierReports: mergeList(local.cashierReports, cloud.cashierReports),
-        auditLogs: mergeList(local.auditLogs, cloud.auditLogs),
-        purchases: mergeList(local.purchases, cloud.purchases),
-        officeSupplies: mergeList(local.officeSupplies, cloud.officeSupplies),
-        schedules: mergeList(local.schedules, cloud.schedules),
-        officeTasks: mergeList(local.officeTasks, cloud.officeTasks),
-        invoices: mergeList(local.invoices, cloud.invoices),
-        expenses: mergeList(local.expenses, cloud.expenses),
-        paymentVerifications: mergeList(local.paymentVerifications, cloud.paymentVerifications),
-        attendance: mergeList(local.attendance, cloud.attendance),
-        leaveRequests: mergeList(local.leaveRequests, cloud.leaveRequests),
-        payrollSlips: mergeList(local.payrollSlips, cloud.payrollSlips),
-        crmLeads: mergeList(local.crmLeads, cloud.crmLeads),
-        promoCoupons: mergeList(local.promoCoupons, cloud.promoCoupons),
-        stockLedger: mergeList(local.stockLedger, cloud.stockLedger),
-        damagedGoods: mergeList(local.damagedGoods, cloud.damagedGoods),
-        productBundles: mergeList(local.productBundles || [], cloud.productBundles || []),
-        goodsReceipts: mergeList(local.goodsReceipts || [], cloud.goodsReceipts || []),
-        shopIncidents: mergeList(local.shopIncidents || [], cloud.shopIncidents || []),
-        handovers: mergeList(local.handovers || [], cloud.handovers || []),
-        pettyCash: mergeList(local.pettyCash || [], cloud.pettyCash || []),
-        taxRecords: mergeList(local.taxRecords || [], cloud.taxRecords || []),
-        staffKPI: mergeList(local.staffKPI || [], cloud.staffKPI || []),
-        deviceSessions: mergeList(local.deviceSessions || [], cloud.deviceSessions || []),
-        salesTargets: cloud.salesTargets || local.salesTargets || { target: 50000000, month: new Date().toISOString().slice(0, 7) }
+        shifts: mergeList(local.shifts, cloud.shifts, 'shifts'),
+        bypassRequests: mergeList(local.bypassRequests, cloud.bypassRequests, 'bypassRequests'),
+        approvedBypasses: mergeList(local.approvedBypasses, cloud.approvedBypasses, 'approvedBypasses'),
+        scans: mergeList(local.scans, cloud.scans, 'scans'),
+        productProposals: mergeList(local.productProposals, cloud.productProposals, 'productProposals'),
+        adminApprovals: mergeList(local.adminApprovals, cloud.adminApprovals, 'adminApprovals'),
+        members: mergeList(local.members, cloud.members, 'members'),
+        cashierReports: mergeList(local.cashierReports, cloud.cashierReports, 'cashierReports'),
+        auditLogs: mergeList(local.auditLogs, cloud.auditLogs, 'auditLogs'),
+        officeSupplies: mergeList(local.officeSupplies, cloud.officeSupplies, 'officeSupplies'),
+        schedules: mergeList(local.schedules, cloud.schedules, 'schedules'),
+        officeTasks: mergeList(local.officeTasks, cloud.officeTasks, 'officeTasks'),
+        invoices: mergeList(local.invoices, cloud.invoices, 'invoices'),
+        expenses: mergeList(local.expenses, cloud.expenses, 'expenses'),
+        paymentVerifications: mergeList(local.paymentVerifications, cloud.paymentVerifications, 'paymentVerifications'),
+        attendance: mergeList(local.attendance, cloud.attendance, 'attendance'),
+        leaveRequests: mergeList(local.leaveRequests, cloud.leaveRequests, 'leaveRequests'),
+        payrollSlips: mergeList(local.payrollSlips, cloud.payrollSlips, 'payrollSlips'),
+        crmLeads: mergeList(local.crmLeads, cloud.crmLeads, 'crmLeads'),
+        promoCoupons: mergeList(local.promoCoupons, cloud.promoCoupons, 'promoCoupons'),
+        stockLedger: mergeList(local.stockLedger, cloud.stockLedger, 'stockLedger'),
+        damagedGoods: mergeList(local.damagedGoods, cloud.damagedGoods, 'damagedGoods'),
+        productBundles: mergeList(local.productBundles || [], cloud.productBundles || [], 'productBundles'),
+        goodsReceipts: mergeList(local.goodsReceipts || [], cloud.goodsReceipts || [], 'goodsReceipts'),
+        shopIncidents: mergeList(local.shopIncidents || [], cloud.shopIncidents || [], 'shopIncidents'),
+        handovers: mergeList(local.handovers || [], cloud.handovers || [], 'handovers'),
+        pettyCash: mergeList(local.pettyCash || [], cloud.pettyCash || [], 'pettyCash'),
+        taxRecords: mergeList(local.taxRecords || [], cloud.taxRecords || [], 'taxRecords'),
+        staffKPI: mergeList(local.staffKPI || [], cloud.staffKPI || [], 'staffKPI'),
+        deviceSessions: mergeList(local.deviceSessions || [], cloud.deviceSessions || [], 'deviceSessions'),
+        salesTargets: cloud.salesTargets || local.salesTargets || { target: 50000000, month: new Date().toISOString().slice(0, 7) },
+        chatHistory: mergeList(local.chatHistory || [], cloud.chatHistory || [], 'chatHistory'),
+        activityLogs: mergeList(local.activityLogs || [], cloud.activityLogs || [], 'activityLogs'),
+        ownerNotifications: mergeList(local.ownerNotifications || [], cloud.ownerNotifications || [], 'ownerNotifications')
       };
     }
 
@@ -1855,10 +1978,27 @@
           }
 
           navigator.geolocation.getCurrentPosition(
-            (position) => {
+            async (position) => {
               lat = position.coords.latitude;
               lon = position.coords.longitude;
               locationStatus = 'granted';
+              
+              // Dynamic Reverse Geocoding via Nominatim OpenStreetMap (Foto 1)
+              try {
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 3000);
+                const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`, { signal: controller.signal });
+                clearTimeout(tid);
+                const geoData = await geoRes.json();
+                if (geoData && geoData.address) {
+                  const city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.municipality || geoData.address.county || '';
+                  const state = geoData.address.state || '';
+                  const country = geoData.address.country || '';
+                  cityName = [city, state, country].filter(Boolean).join(', ');
+                }
+              } catch (e) {
+                console.warn("[Geo] Reverse lookup failed, using IP city name:", e.message);
+              }
               resolve();
             },
             (err) => {
@@ -2387,7 +2527,7 @@
                   badgeClass = 'bg-amber-50 border border-amber-200 text-amber-600';
                   label = `Status Pengguna ${req.targetId}`;
                 } else if (req.type === 'user_delete') {
-                  badgeClass = 'bg-rose-50 border border-rose-250 text-rose-600';
+                  badgeClass = 'bg-rose-50 border border-rose-200 text-rose-600';
                   label = `Hapus Pengguna ${req.targetId}`;
                 }
 
@@ -2438,7 +2578,7 @@
                             <div>Kasir: {req.data.cashier} | Metode: {req.data.method.toUpperCase()} | Total Baru: Rp {req.data.total?.toLocaleString('id-ID')}</div>
                             <div>Item:</div>
                             {req.data.items.map((it, idx) => (
-                              <div key={idx} className="pl-2.5">â€¢ {it.name} ({it.qty}x) @ Rp {it.effectivePrice?.toLocaleString('id-ID')}</div>
+                              <div key={idx} className="pl-2.5">• {it.name} ({it.qty}x) @ Rp {it.effectivePrice?.toLocaleString('id-ID')}</div>
                             ))}
                           </div>
                         )}
@@ -2755,11 +2895,13 @@
         const ctx = chartRef.current.getContext('2d');
         
         const salesGradient = ctx.createLinearGradient(0, 0, 0, 240);
-        salesGradient.addColorStop(0, 'rgba(79, 70, 229, 0.12)'); // Indigo-600
+        salesGradient.addColorStop(0, 'rgba(79, 70, 229, 0.18)'); // Indigo-600
+        salesGradient.addColorStop(0.5, 'rgba(79, 70, 229, 0.06)');
         salesGradient.addColorStop(1, 'rgba(79, 70, 229, 0.0)');
 
         const profitGradient = ctx.createLinearGradient(0, 0, 0, 240);
-        profitGradient.addColorStop(0, 'rgba(16, 185, 129, 0.12)'); // Emerald-500
+        profitGradient.addColorStop(0, 'rgba(16, 185, 129, 0.18)'); // Emerald-500
+        profitGradient.addColorStop(0.5, 'rgba(16, 185, 129, 0.06)');
         profitGradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
 
         chartInstance.current = new Chart(chartRef.current, {
@@ -2777,12 +2919,12 @@
                 tension: 0.35,
                 pointBackgroundColor: '#fff',
                 pointBorderColor: '#4f46e5',
-                pointBorderWidth: 2.5,
-                pointRadius: 3,
-                pointHoverRadius: 6,
+                pointBorderWidth: 3,
+                pointRadius: 4,
+                pointHoverRadius: 7,
                 pointHoverBackgroundColor: '#4f46e5',
                 pointHoverBorderColor: '#fff',
-                pointHoverBorderWidth: 2.5
+                pointHoverBorderWidth: 3
               },
               {
                 label: 'Laba Bersih',
@@ -2794,12 +2936,12 @@
                 tension: 0.35,
                 pointBackgroundColor: '#fff',
                 pointBorderColor: '#10b981',
-                pointBorderWidth: 2.5,
-                pointRadius: 3,
-                pointHoverRadius: 6,
+                pointBorderWidth: 3,
+                pointRadius: 4,
+                pointHoverRadius: 7,
                 pointHoverBackgroundColor: '#10b981',
                 pointHoverBorderColor: '#fff',
-                pointHoverBorderWidth: 2.5
+                pointHoverBorderWidth: 3
               }
             ]
           },
@@ -3030,6 +3172,11 @@
         if (barChartCategoryRef.current) {
           const catLabels = Object.keys(categorySales);
           const catData = Object.values(categorySales);
+          
+          const ctxBar = barChartCategoryRef.current.getContext('2d');
+          const barGradient = ctxBar.createLinearGradient(0, 0, 0, 220);
+          barGradient.addColorStop(0, '#38bdf8'); // Sky-400
+          barGradient.addColorStop(1, '#4f46e5'); // Indigo-600
 
           barChartCategoryInstance.current = new Chart(barChartCategoryRef.current, {
             type: 'bar',
@@ -3038,8 +3185,9 @@
               datasets: [{
                 label: 'Penjualan',
                 data: catData.length > 0 ? catData : [0],
-                backgroundColor: '#38bdf8', // Sky-400 pastel
-                borderRadius: { topLeft: 5, topRight: 5, bottomLeft: 0, bottomRight: 0 },
+                backgroundColor: barGradient,
+                hoverBackgroundColor: '#4f46e5',
+                borderRadius: 8,
                 borderSkipped: false,
                 barPercentage: 0.5
               }]
@@ -3105,77 +3253,77 @@
         <>
           {/* Cards metrics */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 animate-[fadeIn_0.2s]">
-            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
+            <div className="bg-white border border-zinc-200/80 rounded-2xl p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-indigo-50 border border-indigo-100/80 text-indigo-650 flex items-center justify-center flex-shrink-0">
                 <Icon name="wallet" size={24} />
               </div>
               <div>
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Pendapatan</p>
-                <h4 className="text-xl font-bold text-zinc-800">Rp {metrics.revenue.toLocaleString('id-ID')}</h4>
+                <h4 className="text-2xl font-extrabold text-zinc-900 tracking-tight">Rp {metrics.revenue.toLocaleString('id-ID')}</h4>
               </div>
             </div>
 
-            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
+            <div className="bg-white border border-zinc-200/80 rounded-2xl p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-100/80 text-amber-650 flex items-center justify-center flex-shrink-0">
                 <Icon name="coins" size={24} />
               </div>
               <div>
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Total Modal (HPP)</p>
-                <h4 className="text-xl font-bold text-zinc-800">Rp {metrics.cost.toLocaleString('id-ID')}</h4>
+                <h4 className="text-2xl font-extrabold text-zinc-900 tracking-tight">Rp {metrics.cost.toLocaleString('id-ID')}</h4>
               </div>
             </div>
 
-            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
+            <div className="bg-white border border-zinc-200/80 rounded-2xl p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-100/80 text-emerald-650 flex items-center justify-center flex-shrink-0">
                 <Icon name="trending-up" size={24} />
               </div>
               <div>
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Laba Bersih</p>
-                <h4 className={`text-xl font-bold ${metrics.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                <h4 className={`text-2xl font-extrabold tracking-tight ${metrics.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   Rp {metrics.profit.toLocaleString('id-ID')}
                 </h4>
               </div>
             </div>
 
-            <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-zinc-50 border border-zinc-200/60 text-zinc-600 flex items-center justify-center flex-shrink-0">
+            <div className="bg-white border border-zinc-200/80 rounded-2xl p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-300 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-rose-50 border border-rose-100/80 text-rose-650 flex items-center justify-center flex-shrink-0">
                 <Icon name="shopping-bag" size={24} />
               </div>
               <div>
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-0.5">Transaksi</p>
-                <h4 className="text-xl font-bold text-zinc-800">{metrics.count} Nota</h4>
+                <h4 className="text-2xl font-extrabold text-zinc-900 tracking-tight">{metrics.count} Nota</h4>
               </div>
             </div>
           </div>
 
           {/* Section Ringkasan Finansial & Stok (Owner) */}
           <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-xs mb-6 animate-[fadeIn_0.2s]">
-            <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-wider mb-4 flex items-center gap-1.5">
+            <h4 className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-4 flex items-center gap-1.5">
               <Icon name="activity" size={14} className="text-zinc-400" />
               <span>Ringkasan Finansial &amp; Stok (Owner)</span>
             </h4>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 text-left">
-              <div className="p-4 bg-zinc-50 border border-zinc-150 rounded-xl">
+              <div className="p-4 bg-gradient-to-br from-zinc-50 to-zinc-100/40 border border-zinc-150 rounded-xl hover:shadow-xs hover:-translate-y-0.5 transition-all duration-300">
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Profit Hari Ini</p>
-                <p className={`text-base font-extrabold ${ownerSummary.dailyProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                <p className={`text-lg font-extrabold ${ownerSummary.dailyProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   Rp {ownerSummary.dailyProfit.toLocaleString('id-ID')}
                 </p>
               </div>
-              <div className="p-4 bg-zinc-50 border border-zinc-150 rounded-xl">
+              <div className="p-4 bg-gradient-to-br from-zinc-50 to-zinc-100/40 border border-zinc-150 rounded-xl hover:shadow-xs hover:-translate-y-0.5 transition-all duration-300">
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Profit Bulan Ini</p>
-                <p className={`text-base font-extrabold ${ownerSummary.monthlyProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                <p className={`text-lg font-extrabold ${ownerSummary.monthlyProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   Rp {ownerSummary.monthlyProfit.toLocaleString('id-ID')}
                 </p>
               </div>
-              <div className="p-4 bg-zinc-50 border border-zinc-150 rounded-xl">
+              <div className="p-4 bg-gradient-to-br from-zinc-50 to-zinc-100/40 border border-zinc-150 rounded-xl hover:shadow-xs hover:-translate-y-0.5 transition-all duration-300">
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Profit Tahun Ini</p>
-                <p className={`text-base font-extrabold ${ownerSummary.yearlyProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                <p className={`text-lg font-extrabold ${ownerSummary.yearlyProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   Rp {ownerSummary.yearlyProfit.toLocaleString('id-ID')}
                 </p>
               </div>
-              <div className="p-4 bg-zinc-50 border border-zinc-150 rounded-xl">
+              <div className="p-4 bg-gradient-to-br from-zinc-50 to-zinc-100/40 border border-zinc-150 rounded-xl hover:shadow-xs hover:-translate-y-0.5 transition-all duration-300">
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Total Stok &amp; HPP</p>
-                <p className="text-base font-extrabold text-zinc-800">
+                <p className="text-lg font-extrabold text-zinc-800 tracking-tight">
                   {ownerSummary.totalStockQty.toLocaleString('id-ID')} Pcs
                   <span className="text-[10px] text-zinc-450 font-bold block mt-0.5">HPP: Rp {ownerSummary.totalStockVal.toLocaleString('id-ID')}</span>
                 </p>
@@ -3376,9 +3524,7 @@
                     <div key={u.id} className="border border-zinc-200 rounded-2xl p-4 bg-zinc-50/50 hover:bg-white transition flex flex-col justify-between space-y-4">
                       <div className="flex justify-between items-start">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center font-bold text-sm">
-                            {u.name?.substring(0, 2).toUpperCase()}
-                          </div>
+                          <UserAvatar name={u.name} role={u.role} />
                           <div>
                             <h5 className="font-bold text-zinc-800 text-sm flex items-center gap-2">
                               {u.name}
@@ -3847,12 +3993,43 @@
                   <Icon name="printer" size={14} />
                   <span>Cetak Laporan</span>
                 </button>
+                {app.user?.role === 'owner' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm("Apakah Anda yakin ingin menghapus semua data transaksi dan laporan shift? Tindakan ini akan meriset semua analitik dan tidak dapat dibatalkan!")) {
+                        const currentDb = getDB();
+                        currentDb.transactions = [];
+                        currentDb.shifts = [];
+                        currentDb.cashierReports = [];
+                        currentDb.adminApprovals = [];
+                        currentDb.bypassRequests = [];
+                        currentDb.approvedBypasses = [];
+                        currentDb.clearedAt = currentDb.clearedAt || {};
+                        const nowStr = new Date().toISOString();
+                        currentDb.clearedAt.transactions = nowStr;
+                        currentDb.clearedAt.shifts = nowStr;
+                        currentDb.clearedAt.cashierReports = nowStr;
+                        currentDb.clearedAt.adminApprovals = nowStr;
+                        currentDb.clearedAt.bypassRequests = nowStr;
+                        currentDb.clearedAt.approvedBypasses = nowStr;
+                        saveDB(currentDb);
+                        app.refreshDB();
+                        app.addToast("Semua data transaksi dan laporan analitik berhasil dihapus!", "success");
+                      }
+                    }}
+                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-semibold transition flex items-center gap-1.5 shadow-sm text-xs"
+                  >
+                    <Icon name="trash-2" size={14} />
+                    <span>Hapus Semua</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
 
           {/* Tab selector */}
-          <div className="flex bg-zinc-100/80 p-1 rounded-2xl mb-6 gap-1 text-xs font-bold overflow-x-auto custom-scroll whitespace-nowrap max-w-fit border border-zinc-200/50 text-left">
+          <div className="flex bg-zinc-100/60 backdrop-blur-xs p-1 pb-2 rounded-2xl mb-6 gap-1 overflow-x-auto custom-tab-scroll whitespace-nowrap max-w-fit border border-zinc-200/60 text-left">
             {[
               { id: 'overview', label: 'Ringkasan & Analitik', icon: 'bar-chart-2' },
               { id: 'staff', label: 'Pelacakan Karyawan', icon: 'users' },
@@ -3867,16 +4044,16 @@
               <button
                 key={tab.id}
                 onClick={() => setDashboardTab(tab.id)}
-                className={`px-4 py-2.5 rounded-xl transition-all duration-200 flex items-center gap-2 ${
+                className={`px-4 py-2.5 rounded-xl transition-all duration-200 flex items-center gap-2 text-[10px] md:text-[11px] uppercase tracking-wider font-extrabold ${
                   dashboardTab === tab.id
-                    ? 'bg-white text-zinc-900 shadow-sm border border-zinc-200/50'
-                    : 'text-zinc-500 hover:text-zinc-800 hover:bg-white/50'
+                    ? 'bg-white text-zinc-950 shadow-sm border border-zinc-200/50 scale-[1.02]'
+                    : 'text-zinc-550 hover:text-zinc-800 hover:bg-white/50'
                 }`}
               >
                 {tab.icon === 'dollar-sign' ? (
-                  <span className={`text-xs font-black ${dashboardTab === tab.id ? 'text-zinc-900' : 'text-zinc-500'}`} style={{ marginRight: '1px' }}>Rp</span>
+                  <span className={`text-[10px] font-black ${dashboardTab === tab.id ? 'text-zinc-950' : 'text-zinc-550'}`} style={{ marginRight: '1px' }}>Rp</span>
                 ) : (
-                  <Icon name={tab.icon} size={14} className={dashboardTab === tab.id ? 'text-zinc-800' : 'text-zinc-400'} />
+                  <Icon name={tab.icon} size={13} className={dashboardTab === tab.id ? 'text-zinc-900' : 'text-zinc-400'} />
                 )}
                 <span>{tab.label}</span>
               </button>
@@ -3917,7 +4094,7 @@
         if (!u.lastActive || u.entryStatus !== 'entered') return false;
         const now = new Date();
         const diffMs = now - new Date(u.lastActive);
-        return diffMs < 15 * 60 * 1000; // 15 menit
+        return diffMs < 2 * 60 * 1000; // 2 menit (Real-time)
       };
 
       const filteredLogs = logs.filter(l => {
@@ -3980,7 +4157,7 @@
           case 'key_input':
             return { bg: 'bg-amber-50 border-amber-200 text-amber-600', icon: 'keyboard', label: 'Ketik Input' };
           case 'data_mutasi':
-            return { bg: 'bg-emerald-50 border-emerald-250 text-emerald-600', icon: 'database', label: 'Mutasi Data' };
+            return { bg: 'bg-emerald-50 border-emerald-200 text-emerald-600', icon: 'database', label: 'Mutasi Data' };
           default:
             return { bg: 'bg-zinc-50 border-zinc-200 text-zinc-650', icon: 'activity', label: 'Aktivitas' };
         }
@@ -4029,7 +4206,7 @@
 
           {/* Panel Statistik Ringkas */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+            <div className="bg-zinc-50/50 border border-zinc-200/60 p-4 rounded-2xl">
               <div className="flex justify-between items-start">
                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Karyawan Online</span>
                 <span className="p-1 bg-emerald-50 text-emerald-600 rounded-lg"><Icon name="users" size={14} /></span>
@@ -4038,7 +4215,7 @@
               <p className="text-[10px] text-zinc-500 mt-0.5">Dari total {registeredUsers.length} anggota</p>
             </div>
             
-            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+            <div className="bg-zinc-50/50 border border-zinc-200/60 p-4 rounded-2xl">
               <div className="flex justify-between items-start">
                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Karyawan Offline</span>
                 <span className="p-1 bg-zinc-150 text-zinc-500 rounded-lg"><Icon name="users" size={14} /></span>
@@ -4047,7 +4224,7 @@
               <p className="text-[10px] text-zinc-500 mt-0.5">Sedang tidak aktif</p>
             </div>
 
-            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+            <div className="bg-zinc-50/50 border border-zinc-200/60 p-4 rounded-2xl">
               <div className="flex justify-between items-start">
                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Aktivitas Hari Ini</span>
                 <span className="p-1 bg-sky-50 text-sky-600 rounded-lg"><Icon name="activity" size={14} /></span>
@@ -4056,7 +4233,7 @@
               <p className="text-[10px] text-zinc-500 mt-0.5">Entri log terekam</p>
             </div>
 
-            <div className="bg-zinc-50/50 border border-zinc-250/60 p-4 rounded-2xl">
+            <div className="bg-zinc-50/50 border border-zinc-200/60 p-4 rounded-2xl">
               <div className="flex justify-between items-start">
                 <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Teraktif Hari Ini</span>
                 <span className="p-1 bg-amber-50 text-amber-600 rounded-lg"><Icon name="award" size={14} /></span>
@@ -4088,9 +4265,7 @@
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <div className="relative flex-shrink-0">
-                        <div className="w-10 h-10 rounded-full bg-zinc-100 border border-zinc-200 text-zinc-700 flex items-center justify-center font-bold text-xs">
-                          {u.name?.substring(0, 2).toUpperCase()}
-                        </div>
+                        <UserAvatar name={u.name} role={u.role} />
                         <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${
                           online ? 'bg-emerald-500 animate-[pulse_1.5s_infinite]' : 'bg-zinc-300'
                         }`} />
@@ -4148,10 +4323,10 @@
                 className="w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-xs outline-none focus:border-zinc-450 font-semibold text-zinc-700"
               >
                 <option value="all">Semua Jenis</option>
-                <option value="page_view">ðŸ‘€ Buka Halaman (Page View)</option>
-                <option value="click">ðŸ–±ï¸ Klik Menu & Tombol</option>
-                <option value="key_input">âŒ¨ï¸ Ketik Input (Keylogger)</option>
-                <option value="data_mutasi">ðŸ—„ï¸ Mutasi Data (Tambah/Edit/Hapus)</option>
+                <option value="page_view">👀 Buka Halaman (Page View)</option>
+                <option value="click">🖱️ Klik Menu & Tombol</option>
+                <option value="key_input">⌨️ Ketik Input (Keylogger)</option>
+                <option value="data_mutasi">🗄️ Mutasi Data (Tambah/Edit/Hapus)</option>
               </select>
             </div>
             <div>
@@ -4174,7 +4349,7 @@
             {filteredLogs.map((log) => {
               const info = getTypeBadge(log.type);
               return (
-                <div key={log.id} className="group relative flex items-start gap-4 p-4 bg-zinc-50/40 border border-zinc-150 rounded-2xl hover:bg-zinc-50 hover:border-zinc-250 transition-all duration-150 animate-[fadeIn_0.15s_ease-out]">
+                <div key={log.id} className="group relative flex items-start gap-4 p-4 bg-zinc-50/40 border border-zinc-150 rounded-2xl hover:bg-zinc-50 hover:border-zinc-200 transition-all duration-150 animate-[fadeIn_0.15s_ease-out]">
                   <div className={`w-10 h-10 rounded-xl border flex items-center justify-center flex-shrink-0 ${info.bg} shadow-sm group-hover:scale-105 transition-transform`}>
                     <Icon name={info.icon} size={18} />
                   </div>
@@ -4234,6 +4409,24 @@
           u.role !== 'owner' && u.entryStatus === 'entered' && u.liveLocation
         );
       }, [db.users, app.dbVersion]);
+
+      const handleClearAllSessionsAndLogs = () => {
+        if (!confirm('Apakah Anda yakin ingin menghapus semua sesi perangkat dan log audit keamanan? Tindakan ini tidak dapat dibatalkan!')) return;
+        const currentDb = getDB();
+        currentDb.deviceSessions = [];
+        currentDb.scans = [];
+        currentDb.activityLogs = [];
+        currentDb.auditLogs = [];
+        currentDb.clearedAt = currentDb.clearedAt || {};
+        const nowStr = new Date().toISOString();
+        currentDb.clearedAt.deviceSessions = nowStr;
+        currentDb.clearedAt.scans = nowStr;
+        currentDb.clearedAt.activityLogs = nowStr;
+        currentDb.clearedAt.auditLogs = nowStr;
+        saveDB(currentDb);
+        app.refreshDB();
+        app.addToast('Semua sesi perangkat dan log audit keamanan berhasil dihapus!', 'info');
+      };
 
       const handleDeleteSession = (sessionId) => {
         if (!confirm('Hapus log sesi keamanan ini?')) return;
@@ -4347,7 +4540,7 @@
                         </div>
                         <div className="flex justify-between font-medium">
                           <span className="text-zinc-400">Akurasi</span>
-                          <span className="text-zinc-700">{loc.accuracy ? `Â±${Math.round(loc.accuracy)}m` : '-'}</span>
+                          <span className="text-zinc-700">{loc.accuracy ? `±${Math.round(loc.accuracy)}m` : '-'}</span>
                         </div>
                         <div className="flex justify-between font-medium">
                           <span className="text-zinc-400">Terakhir Update</span>
@@ -4398,7 +4591,19 @@
           <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-6 text-left space-y-6">
             <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
               <div>
-                <h4 className="text-base font-bold text-zinc-800">Log Keamanan & Sesi Perangkat</h4>
+                <h4 className="text-base font-bold text-zinc-800 flex items-center gap-2">
+                  <span>Log Keamanan & Sesi Perangkat</span>
+                  {app.user?.role === 'owner' && (
+                    <button
+                      type="button"
+                      onClick={handleClearAllSessionsAndLogs}
+                      className="p-1 px-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg text-[10px] font-bold border border-rose-100 transition inline-flex items-center gap-1"
+                    >
+                      <Icon name="trash-2" size={11} />
+                      <span>Hapus Semua</span>
+                    </button>
+                  )}
+                </h4>
                 <p className="text-xs text-zinc-450 mt-0.5">Daftar rekaman foto wajah dan lokasi GPS ketika pengguna masuk ke dalam sistem.</p>
               </div>
               
@@ -4494,7 +4699,7 @@
                         </div>
                         <div>
                           <span className="text-zinc-400 block text-[9px]">Lokasi (Kota)</span>
-                          <span className="text-zinc-700 block truncate">{session.city || '-'}</span>
+                          <span className="text-zinc-700 block text-xs" title={session.city}>{session.city || '-'}</span>
                         </div>
                         <div>
                           <span className="text-zinc-400 block text-[9px]">Perangkat</span>
@@ -4628,7 +4833,7 @@
                     <span className="w-3 h-3 bg-rose-500 rounded-full animate-pulse"></span>
                     <div>
                       <h4 className="text-sm font-bold text-white">MONITORING LIVE</h4>
-                      <p className="text-[10px] text-zinc-400">{monitorTarget.name} â€” {monitorTarget.email}</p>
+                      <p className="text-[10px] text-zinc-400">{monitorTarget.name} — {monitorTarget.email}</p>
                     </div>
                   </div>
                   <button onClick={stopMonitor} className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition">
@@ -4667,7 +4872,7 @@
                     </div>
                     <div className="bg-zinc-800 rounded-xl p-3 border border-zinc-700">
                       <p className="text-[9px] text-zinc-500 font-bold uppercase">Kualitas</p>
-                      <p className="text-xs font-bold text-sky-400 mt-0.5">160Ã—120</p>
+                      <p className="text-xs font-bold text-sky-400 mt-0.5">160×120</p>
                     </div>
                   </div>
 
@@ -4705,7 +4910,7 @@
             <div className="p-6 border-b border-zinc-150 flex justify-between items-center bg-zinc-50/50">
               <div className="text-left">
                 <h3 className="text-lg font-bold text-zinc-800">Detail Aktivitas Staf: {user.name}</h3>
-                <p className="text-xs text-zinc-450 mt-0.5">{user.email} â€¢ Role: <span className="font-bold uppercase text-[10px] bg-zinc-200 px-1 py-0.5 rounded">{user.role}</span></p>
+                <p className="text-xs text-zinc-450 mt-0.5">{user.email} • Role: <span className="font-bold uppercase text-[10px] bg-zinc-200 px-1 py-0.5 rounded">{user.role}</span></p>
               </div>
               <button onClick={onClose} className="p-2 bg-white border border-zinc-200 hover:bg-zinc-100 rounded-full transition"><Icon name="x" size={16} /></button>
             </div>
@@ -4969,7 +5174,7 @@
     function Sidebar() {
       const app = useContext(AppContext);
       const { user, page, sidebar } = app;
-      const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
+      const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { performPageRedirect('kasir.html'); } else if (admins.has(id)) { performPageRedirect('admin.html?page=' + id); } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { performPageRedirect('owner.html'); } else if (id === 'pos') { performPageRedirect('kasir.html'); } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { performPageRedirect('owner.html'); } else if (admins.has(id) || id === 'admin_workspace') { performPageRedirect('admin.html?page=' + id); } else { app.setPage(id); } } else { app.setPage(id); } };
       const menuItems = [];
       if (user?.role === 'owner') {
         menuItems.push({ id: 'owner_dashboard', icon: 'layout-dashboard', label: 'Dashboard Owner' });
@@ -5029,7 +5234,7 @@
               <button
                 key={item.id}
                 onClick={() => { navigate(item.id); if(window.innerWidth < 768) app.setSidebar(false); }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition font-medium text-sm ${page === item.id ? 'bg-sky-500 text-white shadow-md' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition font-medium text-sm ${page === item.id ? 'bg-indigo-650 text-white font-semibold shadow-[0_4px_12px_rgba(79,70,229,0.25)] ring-1 ring-indigo-500/20' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100 hover:text-white'}`}
               >
                 <Icon name={item.icon} size={20} />
                 {item.label}
@@ -5076,7 +5281,7 @@
 
     function BottomNav() {
       const app = useContext(AppContext);
-      const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { window.location.href = 'kasir.html'; } else if (admins.has(id)) { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (id === 'pos') { window.location.href = 'kasir.html'; } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { window.location.href = 'owner.html'; } else if (admins.has(id) || id === 'admin_workspace') { window.location.href = 'admin.html?page=' + id; } else { app.setPage(id); } } else { app.setPage(id); } };
+      const navigate = (id) => { const path = window.location.pathname; const file = path.substring(path.lastIndexOf('/') + 1) || 'index.html'; const admins = new Set(['admin_workspace', 'products', 'reports', 'users', 'purchases']); if (file.indexOf('owner') !== -1) { if (id === 'pos') { performPageRedirect('kasir.html'); } else if (admins.has(id)) { performPageRedirect('admin.html?page=' + id); } else { app.setPage(id); } } else if (file.indexOf('admin') !== -1) { if (id === 'owner_dashboard') { performPageRedirect('owner.html'); } else if (id === 'pos') { performPageRedirect('kasir.html'); } else { app.setPage(id); } } else if (file.indexOf('kasir') !== -1) { if (id === 'owner_dashboard') { performPageRedirect('owner.html'); } else if (admins.has(id) || id === 'admin_workspace') { performPageRedirect('admin.html?page=' + id); } else { app.setPage(id); } } else { app.setPage(id); } };
       const menuItems = [];
       if (app.user?.role === 'owner') {
         menuItems.push({ id: 'owner_dashboard', icon: 'layout-dashboard', label: 'Dashboard' });
@@ -5107,8 +5312,8 @@
       return (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 flex justify-around items-center h-16 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
           {menuItems.map(item => (
-            <button key={item.id} onClick={() => navigate(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${app.page === item.id ? 'text-sky-600' : 'text-zinc-400'}`}>
-              <Icon name={item.icon} size={22} className={app.page === item.id ? 'fill-sky-100' : ''} />
+            <button key={item.id} onClick={() => navigate(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${app.page === item.id ? 'text-indigo-650' : 'text-zinc-400'}`}>
+              <Icon name={item.icon} size={22} className={app.page === item.id ? 'fill-indigo-100/50' : ''} />
               <span className={`text-[10px] mt-1 font-medium ${app.page === item.id ? 'font-bold' : ''}`}>{item.label}</span>
             </button>
           ))}
@@ -5151,30 +5356,35 @@
       
       return (
         <header className="h-16 bg-white border-b border-zinc-200 flex items-center px-4 md:px-6 flex-shrink-0 z-30 sticky top-0">
-          <button onClick={() => app.setSidebar(true)} className="md:hidden mr-4 p-2 -ml-2 text-zinc-600 rounded-lg hover:bg-zinc-100">
+          <button onClick={() => app.setSidebar(true)} className="md:hidden mr-4 p-2 -ml-2 text-zinc-650 rounded-xl hover:bg-zinc-100">
             <Icon name="menu" size={24} />
           </button>
-          <h2 className="text-xl font-bold text-zinc-800">{titles[app.page]}</h2>
+          <h2 className="text-lg font-bold text-zinc-800 tracking-tight">{titles[app.page]}</h2>
           
           <div className="ml-auto flex items-center gap-3">
             {/* Indikator Koneksi Internet */}
-            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold ${app.isOnline ? 'bg-emerald-50 border-emerald-250 text-emerald-600' : 'bg-rose-50 border-rose-250 text-rose-600'}`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${app.isOnline ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold shadow-xs transition-all duration-300 ${app.isOnline ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-rose-50 border-rose-100 text-rose-800'}`}>
+              <div className="relative flex h-2 w-2">
+                {app.isOnline && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>}
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${app.isOnline ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
+              </div>
               <span className="hidden md:inline">{app.isOnline ? 'Online' : 'Offline'}</span>
             </div>
 
+            {/* Status Sinkronisasi */}
             <button 
               onClick={() => app.setShowSyncModal(true)} 
-              className={`p-2 rounded-xl border flex items-center gap-1.5 transition text-xs font-semibold ${app.syncEnabled ? 'bg-emerald-50 border-emerald-250 text-emerald-600 hover:bg-emerald-100' : 'bg-zinc-50 border-zinc-200 text-zinc-500 hover:bg-zinc-100'}`}
+              className={`px-3 py-1.5 rounded-full border flex items-center gap-1.5 transition text-xs font-semibold shadow-xs hover:shadow-sm ${app.syncEnabled ? 'bg-indigo-50/50 border-indigo-155 text-indigo-750 hover:bg-indigo-50' : 'bg-zinc-50 border-zinc-200 text-zinc-400 hover:bg-zinc-100'}`}
               title="Pengaturan Sinkronisasi"
             >
-              <Icon name="cloud" size={16} className={app.syncStatus === 'syncing' ? 'animate-pulse' : ''} />
+              <Icon name="cloud" size={15} className={`${app.syncStatus === 'syncing' ? 'animate-spin text-indigo-500' : app.syncEnabled ? 'text-indigo-500' : 'text-zinc-400'}`} />
               <span className="hidden sm:inline">{app.syncEnabled ? 'Sync Aktif' : 'Sync Mati'}</span>
             </button>
 
+            {/* Lock Screen */}
             <button 
               onClick={app.lockScreen} 
-              className="p-2 bg-zinc-50 border border-zinc-200 text-zinc-500 hover:text-zinc-850 rounded-xl transition"
+              className="w-9 h-9 bg-zinc-50 border border-zinc-200 text-zinc-550 hover:text-zinc-800 hover:bg-zinc-100 rounded-xl shadow-xs transition flex items-center justify-center flex-shrink-0"
               title="Kunci Layar"
             >
               <Icon name="lock" size={16} />
@@ -5185,12 +5395,12 @@
               <div className="relative">
                 <button 
                   onClick={() => setShowLowStock(!showLowStock)} 
-                  className={`p-2 bg-zinc-50 border border-zinc-200 hover:bg-zinc-100 rounded-xl transition flex items-center justify-center ${lowStockCount > 0 ? 'text-rose-500 border-rose-250' : 'text-zinc-500'}`}
+                  className={`w-9 h-9 border rounded-xl shadow-xs transition flex items-center justify-center relative ${lowStockCount > 0 ? 'text-rose-600 border-rose-200 bg-rose-50 hover:bg-rose-100/50' : 'text-zinc-555 border-zinc-200 bg-zinc-50 hover:bg-zinc-100'}`}
                   title="Peringatan Stok Rendah"
                 >
                   <Icon name="alert-triangle" size={16} />
                   {lowStockCount > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full font-bold">{lowStockCount}</span>
+                    <span className="absolute -top-1 -right-1 bg-rose-600 text-white text-[9px] w-4.5 h-4.5 flex items-center justify-center rounded-full font-bold border-2 border-white shadow-sm">{lowStockCount}</span>
                   )}
                 </button>
 
@@ -5202,7 +5412,7 @@
                     </div>
                     <div className="max-h-64 overflow-y-auto custom-scroll divide-y divide-zinc-100 text-left">
                       {lowStockItems.length === 0 ? (
-                        <div className="p-6 text-center text-zinc-400 text-xs font-medium">Semua stok aman!</div>
+                        <div className="p-6 text-center text-zinc-450 text-xs font-semibold">Semua stok aman!</div>
                       ) : (
                         lowStockItems.map(p => (
                           <div key={p.id} className="p-3 flex justify-between items-center text-xs">
@@ -5212,7 +5422,7 @@
                             </div>
                             <div className="text-right">
                               <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-lg border border-rose-100">{p.stock} pcs</span>
-                              <p className="text-[9px] text-zinc-450 mt-1">Min: {p.minStock || 5}</p>
+                              <p className="text-[9px] text-zinc-455 mt-1">Min: {p.minStock || 5}</p>
                             </div>
                           </div>
                         ))
@@ -5227,12 +5437,12 @@
               <div className="relative">
                 <button 
                   onClick={() => setShowNotif(!showNotif)} 
-                  className={`p-2 bg-zinc-50 border border-zinc-200 hover:bg-zinc-100 rounded-xl transition flex items-center justify-center ${totalNotifs > 0 ? 'text-amber-500 border-amber-250 animate-bounce' : 'text-zinc-500'}`}
+                  className={`w-9 h-9 border rounded-xl shadow-xs transition flex items-center justify-center relative ${totalNotifs > 0 ? 'text-amber-600 border-amber-200 bg-amber-550/10 hover:bg-amber-100/50' : 'text-zinc-555 border-zinc-200 bg-zinc-50 hover:bg-zinc-100'}`}
                   title="Notifikasi Masuk"
                 >
                   <Icon name="bell" size={16} />
                   {totalNotifs > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] w-4.5 h-4.5 flex items-center justify-center rounded-full font-bold">{totalNotifs}</span>
+                    <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] w-4.5 h-4.5 flex items-center justify-center rounded-full font-bold border-2 border-white shadow-sm">{totalNotifs}</span>
                   )}
                 </button>
 
@@ -5244,7 +5454,7 @@
                     </div>
                     <div className="max-h-80 overflow-y-auto custom-scroll divide-y divide-zinc-100">
                       {totalNotifs === 0 ? (
-                        <div className="p-6 text-center text-zinc-400 text-xs font-medium">Tidak ada pemberitahuan baru</div>
+                        <div className="p-6 text-center text-zinc-450 text-xs font-semibold">Tidak ada pemberitahuan baru</div>
                       ) : (
                         <>
                           {/* Bypass Requests */}
@@ -5258,7 +5468,7 @@
                                   </p>
                                   <p className="text-zinc-500 text-[10px] font-semibold mt-0.5">{req.name} ({req.email})</p>
                                 </div>
-                                <span className="text-[9px] text-zinc-450 font-mono">{new Date(req.time).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</span>
+                                <span className="text-[9px] text-zinc-455 font-mono">{new Date(req.time).toLocaleTimeString('id-ID', {hour:'2-digit',minute:'2-digit'})}</span>
                               </div>
                               <div className="text-zinc-550 bg-zinc-50 p-2 rounded-lg font-mono text-[10px]">
                                 <div><span className="text-zinc-400">Lokasi:</span> {req.location}</div>
@@ -5305,15 +5515,14 @@
               </div>
             )}
 
-            <div className="ml-2 text-sm font-medium text-zinc-500 hidden lg:block tabular-nums">
-              {currentDateTime}
+            <div className="ml-2 text-xs font-semibold text-zinc-600 bg-zinc-50 border border-zinc-200/85 rounded-xl px-3.5 py-1.5 hidden lg:flex items-center gap-2 tabular-nums shadow-xs">
+              <Icon name="calendar" size={13} className="text-zinc-450" />
+              <span>{currentDateTime}</span>
             </div>
           </div>
         </header>
       );
     }
-
-    // ==================== BUKA SHIFT PAGE ====================
 
     function LockScreenOverlay({ appState }) {
       const [password, setPassword] = useState('');
@@ -5372,8 +5581,725 @@
 
     // ==================== OPERATIONAL HOURS OVERLAY ====================
 
+                function AIChatbot({ appState }) {
+      const [isOpen, setIsOpen] = useState(false);
+      const [expandedThoughts, setExpandedThoughts] = useState({});
+      const [showHistory, setShowHistory] = useState(false);
+      const [editingMsgId, setEditingMsgId] = useState(null);
+      const [editText, setEditText] = useState('');
+      const [activeSessionId, setActiveSessionId] = useState(null);
+      const [contextMenuMsgId, setContextMenuMsgId] = useState(null);
+      
+      const welcomeMsg = { id: 1, sender: 'bot', text: 'Halo! Saya AI Asisten Operasional Smile POS. Ada yang bisa saya bantu hari ini seputar penggunaan sistem, troubleshoot printer, atau analitik laporan keuangan?', timestamp: new Date() };
+      const [messages, setMessages] = useState([welcomeMsg]);
+      const [inputValue, setInputValue] = useState('');
+      const [isTyping, setIsTyping] = useState(false);
+      const chatEndRef = useRef(null);
+      const [sessions, setSessions] = useState([]);
+
+      useEffect(() => {
+        if (chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+      }, [messages, isTyping]);
+
+      // Close context menu on outside click
+      useEffect(() => {
+        if (!contextMenuMsgId) return;
+        const handler = () => setContextMenuMsgId(null);
+        document.addEventListener('click', handler);
+        return () => document.removeEventListener('click', handler);
+      }, [contextMenuMsgId]);
+
+      // Load sessions list
+      const getChatSessions = () => {
+        const db = getDB();
+        return (db.chatHistory || []).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+      };
+
+      const loadSessions = useCallback(() => {
+        setSessions(getChatSessions());
+      }, []);
+
+      // Load sessions when chatbot window is active or switches to history tab
+      useEffect(() => {
+        if (isOpen || showHistory) {
+          loadSessions();
+        }
+      }, [isOpen, showHistory, loadSessions, appState.dbVersion]);
+
+      // Restore active session on mount
+      useEffect(() => {
+        if (appState.user) {
+          const savedSessionId = localStorage.getItem(`pos_active_chat_session_id_${appState.user.id}`);
+          if (savedSessionId) {
+            const db = getDB();
+            const session = (db.chatHistory || []).find(s => s.id === savedSessionId);
+            if (session) {
+              const restored = session.messages.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+              setMessages(restored);
+              setActiveSessionId(savedSessionId);
+            }
+          }
+        }
+      }, [appState.user]);
+
+      // Sync active session ID to localStorage
+      useEffect(() => {
+        if (appState.user) {
+          if (activeSessionId) {
+            localStorage.setItem(`pos_active_chat_session_id_${appState.user.id}`, activeSessionId);
+          } else {
+            localStorage.removeItem(`pos_active_chat_session_id_${appState.user.id}`);
+          }
+        }
+      }, [activeSessionId, appState.user]);
+
+      const saveCurrentSession = (msgs) => {
+        if (!msgs || msgs.length <= 1) return;
+        const db = getDB();
+        db.chatHistory = db.chatHistory || [];
+        const sessionId = activeSessionId || ('chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+        const userMsgs = msgs.filter(m => m.sender === 'user');
+        const title = userMsgs.length > 0 ? userMsgs[0].text.slice(0, 40) + '...' : 'Sesi Chat Baru';
+        const existingIdx = db.chatHistory.findIndex(s => s.id === sessionId);
+        const sessionData = {
+          id: sessionId,
+          title: title,
+          messages: msgs.map(m => ({ ...m, timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp })),
+          createdAt: existingIdx >= 0 ? db.chatHistory[existingIdx].createdAt : new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          messageCount: msgs.length
+        };
+        if (existingIdx >= 0) {
+          db.chatHistory[existingIdx] = sessionData;
+        } else {
+          db.chatHistory.unshift(sessionData);
+        }
+        if (db.chatHistory.length > 50) db.chatHistory = db.chatHistory.slice(0, 50);
+        saveDB(db);
+        if (!activeSessionId) setActiveSessionId(sessionId);
+        loadSessions();
+        return sessionId;
+      };
+
+      const loadSession = (sessionId) => {
+        const db = getDB();
+        const session = (db.chatHistory || []).find(s => s.id === sessionId);
+        if (session) {
+          const restored = session.messages.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+          setMessages(restored);
+          setActiveSessionId(sessionId);
+          setShowHistory(false);
+        }
+      };
+
+      const deleteSession = (sessionId) => {
+        const db = getDB();
+        db.chatHistory = (db.chatHistory || []).filter(s => s.id !== sessionId);
+        saveDB(db);
+        setSessions(getChatSessions());
+        if (activeSessionId === sessionId) {
+          setActiveSessionId(null);
+          setMessages([welcomeMsg]);
+        }
+        appState.refreshDB();
+      };
+
+      const startNewChat = () => {
+        if (messages.length > 1) saveCurrentSession(messages);
+        setActiveSessionId(null);
+        setMessages([welcomeMsg]);
+        setShowHistory(false);
+        if (appState.user) {
+          localStorage.removeItem(`pos_active_chat_session_id_${appState.user.id}`);
+        }
+      };
+
+      const deleteMessage = (msgId) => {
+        setMessages(prev => {
+          const updated = prev.filter(m => m.id !== msgId);
+          if (activeSessionId && updated.length > 1) {
+            setTimeout(() => saveCurrentSession(updated), 50);
+          }
+          return updated;
+        });
+        setContextMenuMsgId(null);
+      };
+
+      const startEditMessage = (msg) => {
+        setEditingMsgId(msg.id);
+        setEditText(msg.text);
+        setContextMenuMsgId(null);
+      };
+
+      const confirmEditMessage = () => {
+        if (!editText.trim()) return;
+        setMessages(prev => {
+          const msgIdx = prev.findIndex(m => m.id === editingMsgId);
+          if (msgIdx < 0) return prev;
+          const updated = prev.slice(0, msgIdx);
+          const editedMsg = { ...prev[msgIdx], text: editText.trim(), edited: true };
+          updated.push(editedMsg);
+          if (editedMsg.sender === 'user') {
+            setTimeout(() => {
+              setIsTyping(true);
+              setTimeout(() => {
+                const replyText = getAIResponse(editedMsg.text);
+                const botMsg = { id: Date.now() + 1, sender: 'bot', text: replyText, timestamp: new Date() };
+                setIsTyping(false);
+                setMessages(p => {
+                  const newMsgs = [...p, botMsg];
+                  setTimeout(() => saveCurrentSession(newMsgs), 50);
+                  return newMsgs;
+                });
+              }, 600);
+            }, 50);
+          }
+          return updated;
+        });
+        setEditingMsgId(null);
+        setEditText('');
+      };
+
+      const quickQuestions = [
+        "Bagaimana koneksi printer?",
+        "Cek omset hari ini",
+        "Solusi stok menipis?",
+        "Apa itu Buka/Tutup Shift?",
+        "Cara masuk Mode Panik?",
+        "Daftar perintah AI"
+      ];
+
+      const getAIResponse = (query) => {
+        const text = query.toLowerCase().trim();
+        const db = getDB();
+        const formatReply = (thought, reply) => `<thought>${thought}<\/thought>\n${reply}`;
+
+        // 1. Out of Scope Check
+        const posKeywords = [
+          'pos', 'smile', 'kasir', 'printer', 'scanner', 'struk', 'panik', 'panic', 'shift', 'stok',
+          'produk', 'laporan', 'login', 'owner', 'admin', 'dapur', 'password', 'bypass', 'jam',
+          'operasional', 'transaksi', 'bayar', 'qris', 'tunai', 'grosir', 'member', 'pelanggan',
+          'akun', 'delete', 'sync', 'gudang', 'selisih', 'saldo', 'pengadaan', 'beli', 'sistem',
+          'error', 'kamera', 'webcam', 'device', 'session', 'log', 'audit', 'keuangan', 'bantuan',
+          'fitur', 'panduan', 'shortcut', 'cara', 'bagaimana', 'masalah', 'kendala', 'omset',
+          'penjualan', 'untung', 'laba', 'siapa saya', 'perintah', 'bantuan', 'kunci', 'keranjang',
+          'singkron', 'sinkron', 'halo', 'hi', 'selamat', 'terima kasih', 'thanks', 'makasih', 'oke', 'ok',
+          'barcode', 'kamera', 'camera', 'scan', 'membaca', 'loyalty', 'poin', 'diskon', 'member', 'kartu',
+          'offline', 'internet', 'koneksi', 'mati', 'backup', 'restore', 'cadangan', 'ekspor', 'impor',
+          'best seller', 'laris', 'terlaris', 'grafik', 'analisis', 'karyawan', 'tugas', 'jadwal', 'kpi',
+          'hpp', 'rugi', 'modal', 'absensi', 'cuti', 'kpi', 'kontak', 'crm', 'prospek', 'lead', 'grosir'
+        ];
+
+        const isPosRelated = posKeywords.some(keyword => text.includes(keyword)) || /^[\d\s+\-*\/().]+$/.test(text);
+
+        if (!isPosRelated && text.length > 4) {
+          return formatReply(
+            "Mengidentifikasi pertanyaan umum di luar domain sistem kasir Smile POS.\nMembatasi ruang lingkup asisten secara sopan agar fokus pada operasional toko.",
+            "Maaf, sebagai AI Asisten Smile POS, saya didesain khusus untuk membantu operasional kasir, inventaris barang, analisis keuangan, dan troubleshoot perangkat kasir Anda. Silakan tanyakan hal-hal yang berkaitan dengan fitur atau kendala teknis Smile POS."
+          );
+        }
+
+        // 2. Math Expression Evaluator
+        if (/^[\d\s+\-*\/().]+$/.test(text) && text.length >= 3) {
+          try {
+            const cleanExpr = text.replace(/[^0-9+\-*\/().\s]/g, '');
+            const result = eval(cleanExpr);
+            return formatReply(
+              `Mengevaluasi ekspresi matematika sederhana: "${cleanExpr}".\nMelakukan kalkulasi aritmatika langsung.`,
+              `**Hasil Perhitungan Aritmatika:**\n\n\`\`\`\n${cleanExpr} = ${result.toLocaleString('id-ID')}\n\`\`\``
+            );
+          } catch(e) {}
+        }
+
+        // 3. Mode Panik (Panic Mode)
+        if (text.includes('panik') || text.includes('panic') || text.includes('darurat') || text.includes('kalkulator darurat')) {
+          setTimeout(() => { if (appState.setIsPanicMode) appState.setIsPanicMode(true); }, 50);
+          return formatReply(
+            "Mendeteksi sinyal bahaya atau instruksi penyamaran layar kasir (Mode Panik).\nMemanggil fungsi `setIsPanicMode(true)` secara asinkron.\nMenyiapkan panduan keluar dari penyamaran.",
+            "🚨 **MODE PANIK DIAKTIFKAN!** Layar kasir Anda telah disamarkan sebagai **Kalkulator Operasional Biasa** secara instan.\n\n**Cara Membuka Penyamaran:**\n- Ketik kode rahasia **911** pada kalkulator penyamaran.\n- Tekan tombol **=** (sama dengan) untuk masuk kembali ke sistem utama."
+          );
+        }
+
+        // 4. Tutup/Buka Shift Kasir
+        if (text.includes('tutup shift') || text.includes('buka shift') || text.includes('selisih kas')) {
+          setTimeout(() => { if (appState.setShowTutupShiftModal) appState.setShowTutupShiftModal(true); }, 50);
+          return formatReply(
+            "Mengekstrak maksud penutupan shift kasir.\nMenjalankan dialog Buka/Tutup Shift agar kasir memasukkan jumlah uang fisik di laci kas (audit selisih kas).",
+            "🔒 **Prosedur Tutup Shift Kasir**\n\nSaya telah membuka modal **Buka/Tutup Shift**.\n\n**Langkah-langkah Penutupan Shift:**\n1. Hitung seluruh uang tunai fisik di laci kas Anda saat ini.\n2. Masukkan nominalnya ke dalam kolom **Uang Laci Fisik**.\n3. Sistem akan otomatis menghitung selisih kas (apakah surplus atau minus) terhadap catatan penjualan sistem.\n4. Klik **Tutup Shift** untuk menyimpan laporan dan mencetak struk penutupan."
+          );
+        }
+
+        // 5. Sinkronisasi (Supabase Sync)
+        if (text.includes('sinkron') || text.includes('sync') || text.includes('singkron')) {
+          setTimeout(() => { if (appState.setShowSyncModal) appState.setShowSyncModal(true); }, 50);
+          return formatReply(
+            "Mendeteksi instruksi penyelarasan database local ke cloud Supabase.\nMembuka modal Sync Cloud.",
+            "☁️ **Penyelarasan Database Cloud**\n\nModal sinkronisasi **Supabase Cloud** telah dibuka. Di sini Anda dapat memantau status jaringan, melihat latensi koneksi, serta melakukan push/pull data offline secara manual."
+          );
+        }
+
+        // 6. Inventaris & Stok Kritis (Live DB Query)
+        if (text.includes('stok') || text.includes('habis') || text.includes('menipis') || text.includes('kritis')) {
+          const lowStock = (db.products || []).filter(p => p.active !== false && (p.stock || 0) <= (p.minStock || 5));
+          if (lowStock.length === 0) {
+            return formatReply(
+              "Memeriksa database inventaris produk (db.products).\nHasil filter stok <= minStock kosong.",
+              "✅ **Status Inventaris Aman!**\n\nSeluruh produk aktif saat ini memiliki jumlah stok yang aman di atas batas minimum."
+            );
+          }
+          const list = lowStock.slice(0, 6).map(p => `- **${p.name}**: Sisa **${p.stock}** unit (Min: ${p.minStock || 5} unit)`).join('\n');
+          const totalRestockCost = lowStock.reduce((s, p) => s + (Math.max(0, (p.minStock || 5) - p.stock) * (p.cost || 0)), 0);
+          return formatReply(
+            "Melakukan query database inventaris produk (db.products) secara real-time.\nMenyaring produk dengan stok kritis dan menghitung anggaran pengadaan ulang.",
+            `⚠️ **Peringatan Stok Kritis (${lowStock.length} Produk):**\n\n${list}\n\n---\n💰 **Estimasi Anggaran Restock:** Rp ${totalRestockCost.toLocaleString('id-ID')}\n_Silakan ajukan proposal pengadaan pada menu Pengadaan._`
+          );
+        }
+
+        // 7. Omset & Laporan Penjualan Hari Ini (Live DB Query)
+        if (text.includes('omset') || text.includes('penjualan') || text.includes('pendapatan') || text.includes('laba') || text.includes('untung')) {
+          const todayStr = new Date().toLocaleDateString('en-CA');
+          const todayTx = (db.transactions || []).filter(t => {
+            const d = new Date(t.date || t.timestamp);
+            return d.toLocaleDateString('en-CA') === todayStr && !t.deleted;
+          });
+          const revenue = todayTx.reduce((sum, t) => sum + (t.total || 0), 0);
+          const profit = todayTx.reduce((sum, t) => sum + (t.profit || (t.total - t.cost) || 0), 0);
+          return formatReply(
+            "Melakukan query database transaksi (db.transactions) untuk tanggal hari ini.\nMenyaring transaksi aktif dan menghitung total omset kotor serta laba bersih.",
+            `📊 **Laporan Finansial Real-time Hari Ini:**\n\n` +
+            `- **Jumlah Transaksi**: ${todayTx.length} Nota\n` +
+            `- **Total Pendapatan (Omset)**: Rp ${revenue.toLocaleString('id-ID')}\n` +
+            `- **Estimasi Laba Bersih**: Rp ${profit.toLocaleString('id-ID')}\n\n` +
+            `*Catatan: Angka di atas dihitung otomatis berdasarkan database lokal perangkat Anda saat ini.*`
+          );
+        }
+
+        // 8. Troubleshoot Printer & Scanner
+        if (text.includes('printer') || text.includes('cetak') || text.includes('struk') || text.includes('scanner') || text.includes('sambung')) {
+          return formatReply(
+            "Mengidentifikasi kendala perangkat keras (hardware troubleshoot).\nMenyusun panduan koneksi printer struk Thermal bluetooth/USB/IP.",
+            "🔌 **Panduan Koneksi Printer Struk & Barcode Scanner:**\n\n" +
+            "**1. Printer Struk (Bluetooth/USB/Network):**\n" +
+            "- Masuk ke menu **Pengaturan Perangkat (Hardware)** di pojok kanan atas.\n" +
+            "- Pilih **Bluetooth** (aktifkan bluetooth HP/Laptop lalu cari printer), **USB** (pastikan driver terinstal), atau **Ethernet/Network** (masukkan IP Address printer, misal: `192.168.1.100`).\n" +
+            "- Jika kertas macet (paper jam) atau printer offline, matikan unit selama 5 detik, bersihkan laci kertas, lalu nyalakan kembali.\n\n" +
+            "**2. Barcode Scanner:**\n" +
+            "- Pastikan scanner terdeteksi sebagai mode keyboard (HID). Uji dengan memindai barcode di notepad."
+          );
+        }
+
+        // 9. Shortcuts Keyboard
+        if (text.includes('shortcut') || text.includes('tombol') || text.includes('pintas')) {
+          return formatReply(
+            "Menampilkan daftar tombol pintas (keyboard shortcuts) kasir.",
+            "⌨️ **Keyboard Shortcuts Kasir (Navigasi Cepat):**\n\n" +
+            "- **F1**: Tampilkan Panduan Keyboard Shortcuts\n" +
+            "- **F2**: Fokus ke Kolom Pencarian Produk\n" +
+            "- **F4**: Buka Modal Diskon Transaksi\n" +
+            "- **F7**: Selesaikan Pembayaran (Bayar Sekarang)\n" +
+            "- **F8**: Bersihkan Seluruh Keranjang Belanja\n" +
+            "- **F9**: Fokus ke Pencarian Pelanggan (Member)\n" +
+            "- **ESC**: Tutup / Batalkan Modal Aktif"
+          );
+        }
+
+        // 10. Pelanggan & Loyalty Poin
+        if (text.includes('pelanggan') || text.includes('member') || text.includes('poin') || text.includes('loyalty')) {
+          const totalMembers = (db.members || []).length;
+          return formatReply(
+            "Mendeteksi pertanyaan tentang CRM/Loyalty Member.\nMengambil data pelanggan aktif dan mengkalkulasi total database.",
+            `👥 **Sistem Loyalty & Pelanggan:**\n\n` +
+            `- **Total Member Terdaftar**: ${totalMembers} Orang\n\n` +
+            `**Skema Poin & Diskon:**\n` +
+            `- Setiap pembelanjaan kelipatan **Rp 10.000** bernilai **1 Poin**.\n` +
+            `- Poin dapat ditukar dengan potongan diskon belanja langsung saat transaksi di layar kasir.`
+          );
+        }
+
+        // 11. Keamanan & Log Audit
+        if (text.includes('keamanan') || text.includes('audit') || text.includes('log') || text.includes('sesi')) {
+          const activeSessionsCount = (db.deviceSessions || []).length;
+          return formatReply(
+            "Memeriksa status keamanan perangkat dan log audit (db.deviceSessions).",
+            `🛡️ **Log Keamanan & Sesi Aktif:**\n\n` +
+            `- **Sesi Perangkat Terbuka**: ${activeSessionsCount} perangkat\n` +
+            `- Semua aktivitas pengguna (hapus transaksi, edit stok, login) tercatat secara ketat di menu **Log Audit Lengkap** demi keamanan internal toko.`
+          );
+        }
+
+        // 12. HPP & Laba Rugi
+        if (text.includes('hpp') || text.includes('modal') || text.includes('laba rugi') || text.includes('keuangan')) {
+          return formatReply(
+            "Mengidentifikasi topik akuntansi HPP (Harga Pokok Penjualan).",
+            `📈 **Analisis HPP & Margin:**\n\n` +
+            `1. Pastikan Anda telah memasukkan nilai **Modal (HPP)** dengan benar saat menambahkan produk baru.\n` +
+            `2. Sistem menggunakan metode FIFO/Rata-rata untuk menghitung margin laba kotor di menu **Laporan Penjualan** secara otomatis.`
+          );
+        }
+
+        // 13. Daftar Perintah AI & Help
+        if (text.includes('perintah') || text.includes('bantuan') || text.includes('help') || text.includes('halo') || text.includes('hi') || text.includes('assalamualaikum')) {
+          return formatReply(
+            "Menyusun daftar perintah bantuan AI Asisten Smile POS.",
+            "👋 **Halo! Saya Asisten AI Smile POS.**\n\nBerikut adalah beberapa hal yang bisa Anda tanyakan kepada saya:\n" +
+            "1. **Tindakan Sistem**: Ketik *'Masuk mode panik'*, *'Tutup shift'*, *'Kunci layar'*, atau *'Kosongkan keranjang'*.\n" +
+            "2. **Query Database**: Ketik *'Cek omset hari ini'* atau *'Solusi stok menipis'* untuk mendapatkan data langsung dari sistem.\n" +
+            "3. **Panduan Teknis**: Ketik *'Bagaimana koneksi printer?'* atau *'Daftar tombol shortcut'*.\n" +
+            "4. **Kalkulator**: Ketik langsung perhitungan matematika, contoh: *'50000 * 12'*."
+          );
+        }
+
+        // Default Reply
+        return formatReply(
+          "Gagal mencocokkan intent spesifik. Mengarahkan pengguna ke panduan umum bantuan.",
+          "Saya memahami ketikan Anda berkaitan dengan operasional toko. Namun, untuk jawaban yang lebih spesifik, silakan gunakan kata kunci seperti **omset**, **stok**, **printer**, **mode panik**, atau ketik **bantuan** untuk panduan lengkap perintah."
+        );
+      };
+
+      const handleSendMessage = (e) => {
+        if (e) e.preventDefault();
+        const text = inputValue.trim();
+        if (!text) return;
+
+        const userMsg = { id: Date.now(), sender: 'user', text: text, timestamp: new Date() };
+        const newMsgs = [...messages, userMsg];
+        setMessages(newMsgs);
+        setInputValue('');
+        setIsTyping(true);
+
+        setTimeout(() => {
+          const replyText = getAIResponse(text);
+          const botMsg = { id: Date.now() + 1, sender: 'bot', text: replyText, timestamp: new Date() };
+          setIsTyping(false);
+          setMessages(prev => {
+            const updated = [...prev, botMsg];
+            setTimeout(() => saveCurrentSession(updated), 50);
+            return updated;
+          });
+        }, 550);
+      };
+
+      const renderMessageContent = (msg) => {
+        const text = msg.text || '';
+        const thoughtMatch = text.match(/<thought>([\s\S]*?)<\/thought>/);
+        let cleanText = text;
+        let thought = '';
+
+        if (thoughtMatch) {
+          thought = thoughtMatch[1].trim();
+          cleanText = text.replace(/<thought>[\s\S]*?<\/thought>/, '').trim();
+        }
+
+        const msgId = msg.id;
+        const isThoughtExpanded = !!expandedThoughts[msgId];
+
+        return (
+          <div className="space-y-2 max-w-full">
+            {thought && (
+              <div className="bg-zinc-950 border border-zinc-850 rounded-2xl p-3 text-[10px] text-zinc-400 font-mono mb-2 shadow-inner">
+                <button 
+                  type="button"
+                  onClick={() => setExpandedThoughts(p => ({ ...p, [msgId]: !isThoughtExpanded }))}
+                  className="flex items-center gap-1.5 font-bold text-zinc-350 hover:text-white transition uppercase tracking-wider text-[9px]"
+                >
+                  <Icon name="brain" size={12} className="text-indigo-400 animate-pulse" />
+                  <span>Proses Berpikir AI ({isThoughtExpanded ? "Sembunyikan" : "Tampilkan"})</span>
+                </button>
+                {isThoughtExpanded && (
+                  <div className="mt-2.5 pl-3 border-l-2 border-indigo-500/50 whitespace-pre-line text-left leading-relaxed text-zinc-450 font-mono text-[9px] overflow-x-auto hide-scrollbar">
+                    {thought}
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {editingMsgId === msgId ? (
+              <div className="flex gap-1.5 mt-1">
+                <input 
+                  type="text" 
+                  value={editText} 
+                  onChange={e => setEditText(e.target.value)}
+                  className="flex-1 px-3 py-1.5 bg-white border border-zinc-200 rounded-lg text-xs outline-none text-zinc-850"
+                  onKeyDown={e => { if (e.key === 'Enter') confirmEditMessage(); }}
+                />
+                <button onClick={confirmEditMessage} className="px-2.5 py-1 bg-zinc-900 text-white rounded-lg text-xs font-bold">Simpan</button>
+                <button onClick={() => setEditingMsgId(null)} className="px-2.5 py-1 bg-zinc-100 text-zinc-550 rounded-lg text-xs font-semibold">Batal</button>
+              </div>
+            ) : (
+              <p className="whitespace-pre-line leading-relaxed text-xs">{cleanText}</p>
+            )}
+          </div>
+        );
+      };
+
+      const BotAvatar = () => (
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-650 flex items-center justify-center flex-shrink-0 relative shadow-md shadow-indigo-500/10 border border-indigo-400/20">
+          <div className="animate-[bounce_2s_infinite]">
+            <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 8V4H8"></path>
+              <rect width="16" height="12" x="4" y="8" rx="2"></rect>
+              <path d="M2 14h2"></path>
+              <path d="M20 14h2"></path>
+              <path d="M15 13v2"></path>
+              <path d="M9 13v2"></path>
+            </svg>
+          </div>
+          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 border-2 border-white rounded-full">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          </span>
+        </div>
+      );
+
+      const UserAvatar = () => (
+        <div className="w-8 h-8 rounded-full bg-zinc-200 border border-zinc-300 flex items-center justify-center font-bold text-xs text-zinc-650 flex-shrink-0">
+          {(appState.user?.name || 'US').substring(0, 2).toUpperCase()}
+        </div>
+      );
+
+      return (
+        <div className="fixed bottom-6 right-6 z-[9999] flex flex-col items-end">
+          {/* Chat Window Container */}
+          <div 
+            style={{ display: isOpen ? 'flex' : 'none' }}
+            className="mb-4 w-[380px] h-[550px] bg-white/95 backdrop-blur-md rounded-[28px] shadow-[0_24px_64px_-12px_rgba(0,0,0,0.18)] border border-zinc-200 overflow-hidden flex flex-col animate-[slideUp_0.3s_ease-out] text-left font-sans"
+          >
+            {/* Header */}
+            <div className="px-6 py-4 bg-zinc-900 text-white flex items-center justify-between border-b border-zinc-800 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <BotAvatar />
+                <div>
+                  <h4 className="text-xs font-bold tracking-wide text-zinc-100">AI SMILE POS ASSISTANT</h4>
+                  <p className="text-[10px] text-zinc-400 font-medium">Asisten Operasional Toko &bull; Online</p>
+                </div>
+              </div>
+              
+              <div className="flex items-center gap-1.5">
+                <button 
+                  onClick={() => {
+                    if (showHistory) {
+                      setShowHistory(false);
+                    } else {
+                      if (messages.length > 1) saveCurrentSession(messages);
+                      setShowHistory(true);
+                    }
+                  }} 
+                  title="Riwayat Percakapan"
+                  className={`p-1.5 rounded-full transition ${showHistory ? 'bg-zinc-800 text-white' : 'hover:bg-zinc-800 text-zinc-400 hover:text-white'}`}
+                >
+                  <Icon name="clock" size={16} />
+                </button>
+                <button 
+                  onClick={startNewChat}
+                  title="Chat Baru"
+                  className="p-1.5 hover:bg-zinc-800 rounded-full transition text-zinc-400 hover:text-white"
+                >
+                  <Icon name="plus" size={16} />
+                </button>
+                <button 
+                  onClick={() => setIsOpen(false)} 
+                  title="Tutup"
+                  className="p-1.5 hover:bg-zinc-800 rounded-full transition text-zinc-400 hover:text-white"
+                >
+                  <Icon name="x" size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Body */}
+            {showHistory ? (
+              <div className="flex-1 p-5 overflow-y-auto bg-zinc-50 flex flex-col space-y-3 custom-scroll">
+                <div className="flex items-center justify-between mb-2 border-b border-zinc-150 pb-2">
+                  <h5 className="text-xs font-bold text-zinc-550 uppercase tracking-wider">Riwayat Percakapan</h5>
+                  <button 
+                    onClick={() => setShowHistory(false)}
+                    className="text-xs text-indigo-600 font-bold hover:underline"
+                  >
+                    Kembali ke Chat
+                  </button>
+                </div>
+                {sessions.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center py-20 text-center text-zinc-400">
+                    <Icon name="message-square-dashed" size={32} className="text-zinc-300 mb-2" />
+                    <p className="text-xs font-semibold">Belum Ada Riwayat Chat</p>
+                    <p className="text-[10px] mt-0.5">Sesi chat aktif Anda akan tersimpan di sini</p>
+                  </div>
+                ) : (
+                  sessions.map(s => (
+                    <div key={s.id} className="group flex justify-between items-center bg-white border border-zinc-200 rounded-2xl p-4 hover:border-zinc-300 hover:shadow-xs transition text-xs font-medium cursor-pointer" onClick={() => loadSession(s.id)}>
+                      <div className="min-w-0 pr-4 flex-1">
+                        <p className="font-bold text-zinc-800 truncate" title={s.title}>{s.title}</p>
+                        <p className="text-[10px] text-zinc-400 mt-1 flex items-center gap-1">
+                          <Icon name="message-circle" size={10} /> {s.messageCount} pesan &bull; {new Date(s.updatedAt).toLocaleDateString('id-ID', {day:'numeric',month:'short'})}
+                        </p>
+                      </div>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                        className="p-2 bg-rose-50 border border-rose-100 text-rose-500 rounded-xl hover:bg-rose-100 transition opacity-100 md:opacity-0 group-hover:opacity-100"
+                        title="Hapus Sesi"
+                      >
+                        <Icon name="trash-2" size={12} />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex-1 p-5 overflow-y-auto bg-zinc-50 flex flex-col space-y-4 custom-scroll text-xs">
+                  {messages.map((msg) => {
+                    const isBot = msg.sender === 'bot';
+                    const msgId = msg.id;
+                    return (
+                      <div 
+                        key={msgId} 
+                        className={`flex gap-3 max-w-full ${isBot ? 'items-start' : 'items-start flex-row-reverse'}`}
+                      >
+                        {isBot ? <BotAvatar /> : <UserAvatar />}
+                        <div 
+                          className={`relative group flex flex-col ${isBot ? 'items-start' : 'items-end'}`}
+                        >
+                          <div 
+                            className={`p-3.5 rounded-2xl ${
+                              isBot 
+                                ? 'bg-white border border-zinc-200 text-zinc-850 rounded-2xl rounded-tl-none shadow-2xs' 
+                                : 'bg-indigo-650 text-white rounded-2xl rounded-tr-none'
+                            }`}
+                          >
+                            {renderMessageContent(msg)}
+                          </div>
+                          
+                          {/* Message Context Action Trigger */}
+                          <div className={`absolute top-2.5 ${isBot ? '-right-14' : '-left-14'} flex gap-1 bg-white border border-zinc-200 rounded-lg shadow-sm p-1 opacity-0 group-hover:opacity-100 transition duration-200 z-10`}>
+                            <button 
+                              onClick={() => startEditMessage(msg)}
+                              className="p-1 hover:bg-zinc-50 text-zinc-400 hover:text-zinc-750 rounded"
+                              title="Edit"
+                            >
+                              <Icon name="pencil" size={10} />
+                            </button>
+                            <button 
+                              onClick={() => deleteMessage(msgId)}
+                              className="p-1 hover:bg-rose-50 text-zinc-400 hover:text-rose-600 rounded"
+                              title="Hapus"
+                            >
+                              <Icon name="trash-2" size={10} />
+                            </button>
+                          </div>
+                          
+                          <span className="text-[9px] text-zinc-400 mt-1 font-semibold block px-1">
+                            {new Date(msg.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                            {msg.edited && ' (diedit)'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {isTyping && (
+                    <div className="flex gap-3 items-start">
+                      <BotAvatar />
+                      <div className="bg-white border border-zinc-150 p-4 rounded-2xl rounded-tl-sm shadow-xs flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 bg-zinc-450 rounded-full animate-bounce"></span>
+                        <span className="w-1.5 h-1.5 bg-zinc-450 rounded-full animate-bounce [animation-delay:0.2s]"></span>
+                        <span className="w-1.5 h-1.5 bg-zinc-450 rounded-full animate-bounce [animation-delay:0.4s]"></span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {/* Quick Questions Helper */}
+                {messages.length === 1 && (
+                  <div className="px-5 py-3.5 bg-zinc-50 border-t border-zinc-150 flex flex-wrap gap-1.5 max-h-36 overflow-y-auto custom-scroll text-left">
+                    {quickQuestions.map((q, idx) => (
+                      <button 
+                        key={idx}
+                        onClick={() => {
+                          setInputValue(q);
+                          setTimeout(() => handleSendMessage(), 50);
+                        }}
+                        className="px-3 py-1.5 bg-white border border-zinc-200 hover:border-zinc-300 text-zinc-650 hover:text-zinc-800 rounded-xl text-[10px] font-bold shadow-2xs transition"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Footer Input Bar */}
+                <form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-zinc-150 flex gap-2 items-center flex-shrink-0">
+                  <input 
+                    type="text" 
+                    value={inputValue}
+                    onChange={e => setInputValue(e.target.value)}
+                    placeholder="Tulis pesan Anda..."
+                    className="flex-1 px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl outline-none focus:bg-white focus:border-indigo-500 text-xs font-semibold text-zinc-850 focus:ring-1 focus:ring-indigo-100 transition-all"
+                  />
+                  <button 
+                    type="submit"
+                    disabled={!inputValue.trim()}
+                    className="w-8 h-8 rounded-full bg-indigo-600 disabled:bg-zinc-200 text-white flex items-center justify-center shadow-md shadow-indigo-600/10 hover:bg-indigo-700 active:scale-95 disabled:scale-100 disabled:shadow-none transition"
+                  >
+                    <svg className="w-4.5 h-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                    </svg>
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+
+          {/* Chat Float Toggle Trigger */}
+          <div className="relative">
+            {!isOpen && (
+              <span className="absolute inset-0 rounded-full bg-indigo-500/20 animate-ping pointer-events-none scale-105"></span>
+            )}
+            <button 
+              onClick={() => setIsOpen(!isOpen)} 
+              className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 active:scale-90 relative group ${isOpen ? 'bg-zinc-900 text-white shadow-xl' : 'bg-gradient-to-br from-indigo-500 to-violet-650 text-white shadow-lg shadow-indigo-500/35 hover:shadow-indigo-500/50 hover:brightness-110 border border-indigo-400/20'}`}
+              title="Chat Asisten"
+            >
+              <div className={`transition-all duration-300 ${isOpen ? 'rotate-90 scale-90' : 'rotate-0 scale-100'}`}>
+                {isOpen ? <Icon name="x" size={20} className="text-white" /> : (
+                  <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 2a8 8 0 0 0-8 8v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4a8 8 0 0 0-8-8z"></path>
+                    <line x1="12" y1="2" x2="12" y2="1"></line>
+                    <circle cx="12" cy="1" r="0.5" fill="currentColor"></circle>
+                    <circle cx="9" cy="10" r="1" fill="currentColor"></circle>
+                    <circle cx="15" cy="10" r="1" fill="currentColor"></circle>
+                    <path d="M9 13.5h6"></path>
+                    <path d="M6 10.5h.01M18 10.5h.01" strokeWidth="3"></path>
+                  </svg>
+                )}
+              </div>
+              {!isOpen && (
+                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full"></span>
+              )}
+              {!isOpen && (
+                <div className="absolute right-16 top-1/2 -translate-y-1/2 bg-zinc-950/95 backdrop-blur-md text-white text-[10.5px] font-extrabold rounded-2xl shadow-xl opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none whitespace-nowrap border border-zinc-850 p-2 flex items-center gap-2.5 scale-95 group-hover:scale-100 transform origin-right">
+                  <div className="w-5 h-5 rounded-lg bg-gradient-to-br from-indigo-400 to-violet-550 flex items-center justify-center shadow-sm">
+                    <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <rect x="3" y="11" width="18" height="10" rx="2" />
+                      <circle cx="12" cy="5" r="2" />
+                      <path d="M12 7v4" />
+                      <line x1="8" y1="16" x2="8.01" y2="16" strokeWidth="3" />
+                      <line x1="16" y1="16" x2="16.01" y2="16" strokeWidth="3" />
+                    </svg>
+                  </div>
+                  <span className="pr-1.5 tracking-wide">AI Asisten Smile POS</span>
+                </div>
+              )}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     function App() {
       const appState = useAppState();
+
+
 
       // Security check: Redirect to pos.html if not logged in or not owner
       useEffect(() => {
@@ -5398,7 +6324,7 @@
             
             <div className="flex-1 flex flex-col overflow-hidden relative">
               <div className="no-print"><Header /></div>
-              <main className="flex-1 overflow-y-auto p-4 md:p-6 custom-scroll">
+              <main className="flex-1 overflow-y-scroll p-4 md:p-6 custom-scroll">
                 <div className="w-full max-w-[1600px] mx-auto h-full px-2 sm:px-4">
                   <OwnerDashboard />
                 </div>
@@ -5427,6 +6353,9 @@
 
           {appState.customAlert && (
             <CustomAlertModal customAlert={appState.customAlert} onClose={() => appState.setCustomAlert(null)} />
+          )}
+          {appState.user && (
+            <AIChatbot appState={appState} />
           )}
         </AppContext.Provider>
       );
@@ -5466,10 +6395,10 @@
         const rootEl = document.getElementById('root');
         if (rootEl) {
           rootEl.innerHTML = `
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#09090b;color:#f4f4f5;font-family:sans-serif;">
-              <div style="width:40px;height:40px;border:4px solid #27272a;border-top-color:#0ea5e9;border-radius:50%;animation:spin 1s linear infinite;"></div>
-              <h2 style="font-size:18px;font-weight:700;margin-top:24px;letter-spacing:-0.025em;">Mengoptimalkan Halaman...</h2>
-              <p style="font-size:12px;color:#a1a1aa;margin-top:8px;">Hanya dilakukan sekali untuk memastikan kinerja maksimal.</p>
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#f4f4f5;color:#18181b;font-family:sans-serif;">
+              <div style="width:40px;height:40px;border:4px solid #e4e4e7;border-top-color:#4f46e5;border-radius:50%;animation:spin 1s linear infinite;"></div>
+              <h2 style="font-size:18px;font-weight:700;margin-top:24px;letter-spacing:-0.025em;color:#18181b;">Mengoptimalkan Halaman...</h2>
+              <p style="font-size:12px;color:#71717a;margin-top:8px;">Hanya dilakukan sekali untuk memastikan kinerja maksimal.</p>
               <style>
                 @keyframes spin { to { transform: rotate(360deg); } }
               </style>

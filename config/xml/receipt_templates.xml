@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Receipt template configurations for Smile POS thermal printing -->
+<ReceiptTemplates>
+    <Template type="cash" paperWidth="58mm">
+        <Header>
+            <Line align="center" fontStyle="bold" fontSize="double">SMILE COFFEE &amp; EATERY</Line>
+            <Line align="center" fontSize="small">Jl. Merdeka No. 45, Jakarta</Line>
+            <Line align="center" fontSize="small">Telp: 0812-3456-7890</Line>
+            <Line align="left">================================</Line>
+        </Header>
+        <Body>
+            <Line format="[ItemName]"/>
+            <Line format="  [Qty] x [Price]     [Total]"/>
+            <Line align="left">--------------------------------</Line>
+        </Body>
+        <Footer>
+            <Line align="left">Subtotal: [Subtotal]</Line>
+            <Line align="left">Pajak (10%): [Tax]</Line>
+            <Line align="left" fontStyle="bold">TOTAL: [TotalAmount]</Line>
+            <Line align="left">Bayar: [CashAmount]</Line>
+            <Line align="left">Kembali: [ChangeAmount]</Line>
+            <Line align="left">================================</Line>
+            <Line align="center" fontStyle="italic">Terima Kasih Atas Kunjungan Anda</Line>
+            <Line align="center" fontSize="small">Powered by Smile POS</Line>
+        </Footer>
+    </Template>
+    <Template type="qris" paperWidth="58mm">
+        <Header>
+            <Line align="center" fontStyle="bold">SMILE COFFEE &amp; EATERY</Line>
+            <Line align="left">================================</Line>
+        </Header>
+        <Body>
+            <Line align="center" fontStyle="bold">PEMBAYARAN QRIS</Line>
+            <Line align="center" qrCode="true" qrSize="120">[QrisPayload]</Line>
+            <Line align="center" fontSize="small">Scan QR Code Diatas Untuk Bayar</Line>
+            <Line align="left">--------------------------------</Line>
+            <Line align="left">Nominal: [TotalAmount]</Line>
+        </Body>
+        <Footer>
+            <Line align="left">================================</Line>
+            <Line align="center">Simpan Struk Ini Sebagai Bukti</Line>
+        </Footer>
+    </Template>
+</ReceiptTemplates>

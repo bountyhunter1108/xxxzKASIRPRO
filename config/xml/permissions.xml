@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- User access control policy configuration for Smile POS -->
+<AccessControlPolicy>
+    <Roles>
+        <Role name="owner" label="Pemilik (Owner)">
+            <Permissions>
+                <Permission id="view_dashboard_owner">allow</Permission>
+                <Permission id="view_kasir_pos">allow</Permission>
+                <Permission id="manage_products">allow</Permission>
+                <Permission id="view_reports">allow</Permission>
+                <Permission id="manage_users">allow</Permission>
+                <Permission id="manage_purchases">allow</Permission>
+                <Permission id="delete_transaction">allow</Permission>
+                <Permission id="database_backup">allow</Permission>
+                <Permission id="database_restore">allow</Permission>
+            </Permissions>
+        </Role>
+        <Role name="admin" label="Administrator / Gudang">
+            <Permissions>
+                <Permission id="view_dashboard_owner">deny</Permission>
+                <Permission id="view_kasir_pos">allow</Permission>
+                <Permission id="manage_products">allow</Permission>
+                <Permission id="view_reports">allow</Permission>
+                <Permission id="manage_users">deny</Permission>
+                <Permission id="manage_purchases">allow</Permission>
+                <Permission id="delete_transaction">deny</Permission>
+                <Permission id="database_backup">allow</Permission>
+                <Permission id="database_restore">deny</Permission>
+            </Permissions>
+        </Role>
+        <Role name="kasir" label="Kasir POS">
+            <Permissions>
+                <Permission id="view_dashboard_owner">deny</Permission>
+                <Permission id="view_kasir_pos">allow</Permission>
+                <Permission id="manage_products">deny</Permission>
+                <Permission id="view_reports">deny</Permission>
+                <Permission id="manage_users">deny</Permission>
+                <Permission id="manage_purchases">deny</Permission>
+                <Permission id="delete_transaction">deny</Permission>
+                <Permission id="database_backup">deny</Permission>
+                <Permission id="database_restore">deny</Permission>
+            </Permissions>
+        </Role>
+        <Role name="dapur" label="Kasir Dapur">
+            <Permissions>
+                <Permission id="view_dashboard_owner">deny</Permission>
+                <Permission id="view_kasir_pos">deny</Permission>
+                <Permission id="manage_products">deny</Permission>
+                <Permission id="view_reports">deny</Permission>
+                <Permission id="manage_users">deny</Permission>
+                <Permission id="manage_purchases">deny</Permission>
+                <Permission id="delete_transaction">deny</Permission>
+                <Permission id="database_backup">deny</Permission>
+                <Permission id="database_restore">deny</Permission>
+            </Permissions>
+        </Role>
+    </Roles>
+</AccessControlPolicy>

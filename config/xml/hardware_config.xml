@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hardware configurations for Smile POS printing bridge -->
+<HardwareConfig>
+    <PrinterSettings>
+        <DefaultPrinterName>GP-5890x Series</DefaultPrinterName>
+        <PaperWidth>58mm</PaperWidth> <!-- 58mm or 80mm -->
+        <InterfaceType>USB</InterfaceType> <!-- USB, Bluetooth, LAN -->
+        <BaudRate>9600</BaudRate>
+        <BluetoothAddress>00:11:22:33:FF:EE</BluetoothAddress>
+        <NetworkPort>9100</NetworkPort>
+        <IPAddress>192.168.1.100</IPAddress>
+    </PrinterSettings>
+    <BarcodeScanner>
+        <DefaultDevice>HID Keyboard Emulation</DefaultDevice>
+        <ConnectedType>USB</ConnectedType>
+        <AutoEnterSuffix>true</AutoEnterSuffix>
+    </BarcodeScanner>
+</HardwareConfig>

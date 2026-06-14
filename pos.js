@@ -1,4 +1,4 @@
-    const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
+﻿    const { useState, useEffect, useCallback, useMemo, useContext, createContext, useRef } = React;
     if (typeof navigator !== 'undefined') { if (!navigator.mediaDevices) { try { Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); } }, configurable: true, writable: true }); } catch (e) { try { navigator.mediaDevices = { getUserMedia: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); } }; } catch(err) {} } } else if (!navigator.mediaDevices.getUserMedia) { try { Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); }, configurable: true, writable: true }); } catch (e) { try { navigator.mediaDevices.getUserMedia = function() { return Promise.reject(new Error("Kamera tidak didukung di lingkungan ini (pastikan menggunakan HTTPS atau origin aman).")); }; } catch(err) {} } } }
     // ==================== ICONS COMPONENT ====================
     // Komponen aman untuk me-render Lucide icons di dalam React
@@ -1701,10 +1701,27 @@
           }
 
           navigator.geolocation.getCurrentPosition(
-            (position) => {
+            async (position) => {
               lat = position.coords.latitude;
               lon = position.coords.longitude;
               locationStatus = 'granted';
+              
+              // Dynamic Reverse Geocoding via Nominatim OpenStreetMap (Foto 1)
+              try {
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 3000);
+                const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`, { signal: controller.signal });
+                clearTimeout(tid);
+                const geoData = await geoRes.json();
+                if (geoData && geoData.address) {
+                  const city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.municipality || geoData.address.county || '';
+                  const state = geoData.address.state || '';
+                  const country = geoData.address.country || '';
+                  cityName = [city, state, country].filter(Boolean).join(', ');
+                }
+              } catch (e) {
+                console.warn("[Geo] Reverse lookup failed, using IP city name:", e.message);
+              }
               resolve();
             },
             (err) => {
@@ -2669,9 +2686,9 @@
             <div>
               <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">Tipe Koneksi Printer</label>
               <div className="flex bg-zinc-200/50 p-1 rounded-xl text-xs font-semibold">
-                <button type="button" onClick={() => { setPrinterType('bluetooth'); disconnectPrinter(); }} className={`flex-1 py-2 rounded-lg transition ${printerType === 'bluetooth' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>Bluetooth</button>
-                <button type="button" onClick={() => { setPrinterType('usb'); disconnectPrinter(); }} className={`flex-1 py-2 rounded-lg transition ${printerType === 'usb' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>USB (Kabel)</button>
-                <button type="button" onClick={() => { setPrinterType('network'); disconnectPrinter(); }} className={`flex-1 py-2 rounded-lg transition ${printerType === 'network' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>LAN / Wi-Fi</button>
+                <button type="button" onClick={() => { setPrinterType('bluetooth'); disconnectPrinter(); setTimeout(handleBluetoothPrinterConnect, 100); }} className={`flex-1 py-2 rounded-lg transition ${printerType === 'bluetooth' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>Bluetooth</button>
+                <button type="button" onClick={() => { setPrinterType('usb'); disconnectPrinter(); setTimeout(handleUsbPrinterConnect, 100); }} className={`flex-1 py-2 rounded-lg transition ${printerType === 'usb' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>USB (Kabel)</button>
+                <button type="button" onClick={() => { setPrinterType('network'); disconnectPrinter(); setTimeout(handleNetworkPrinterConnect, 100); }} className={`flex-1 py-2 rounded-lg transition ${printerType === 'network' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>LAN / Wi-Fi</button>
               </div>
             </div>
 
@@ -2766,8 +2783,8 @@
               <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">Tipe Scanner</label>
               <div className="flex bg-zinc-200/50 p-1 rounded-xl text-xs font-semibold">
                 <button type="button" onClick={() => { setScannerType('camera'); disconnectScanner(); }} className={`flex-1 py-2 rounded-lg transition ${scannerType === 'camera' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>Kamera HP/Webcam</button>
-                <button type="button" onClick={() => { setScannerType('usb'); disconnectScanner(); }} className={`flex-1 py-2 rounded-lg transition ${scannerType === 'usb' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>USB (Kabel/Dongle)</button>
-                <button type="button" onClick={() => { setScannerType('bluetooth'); disconnectScanner(); }} className={`flex-1 py-2 rounded-lg transition ${scannerType === 'bluetooth' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>Bluetooth</button>
+                <button type="button" onClick={() => { setScannerType('usb'); disconnectScanner(); setTimeout(handleUsbScannerConnect, 100); }} className={`flex-1 py-2 rounded-lg transition ${scannerType === 'usb' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>USB (Kabel/Dongle)</button>
+                <button type="button" onClick={() => { setScannerType('bluetooth'); disconnectScanner(); setTimeout(handleBluetoothScannerConnect, 100); }} className={`flex-1 py-2 rounded-lg transition ${scannerType === 'bluetooth' ? 'bg-white shadow-xs text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'}`}>Bluetooth</button>
               </div>
             </div>
 
@@ -4615,7 +4632,7 @@
         if (!u.lastActive || u.entryStatus !== 'entered') return false;
         const now = new Date();
         const diffMs = now - new Date(u.lastActive);
-        return diffMs < 15 * 60 * 1000; // 15 menit
+        return diffMs < 2 * 60 * 1000; // 2 menit (Real-time)
       };
 
       const filteredLogs = logs.filter(l => {
@@ -5191,7 +5208,7 @@
                         </div>
                         <div>
                           <span className="text-zinc-400 block text-[9px]">Lokasi (Kota)</span>
-                          <span className="text-zinc-700 block truncate">{session.city || '-'}</span>
+                          <span className="text-zinc-700 block text-xs" title={session.city}>{session.city || '-'}</span>
                         </div>
                         <div>
                           <span className="text-zinc-400 block text-[9px]">Perangkat</span>
@@ -17722,7 +17739,7 @@
               <button
                 key={item.id}
                 onClick={() => { navigate(item.id); if(window.innerWidth < 768) app.setSidebar(false); }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition font-medium text-sm ${page === item.id ? 'bg-sky-500 text-white shadow-md' : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'}`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition font-medium text-sm ${page === item.id ? 'bg-indigo-650 text-white font-semibold shadow-[0_4px_12px_rgba(79,70,229,0.25)] ring-1 ring-indigo-500/20' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-105 hover:text-white'}`}
               >
                 <Icon name={item.icon} size={20} />
                 {item.label}
@@ -17799,8 +17816,8 @@
       return (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 flex justify-around items-center h-16 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
           {menuItems.map(item => (
-            <button key={item.id} onClick={() => navigate(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${app.page === item.id ? 'text-sky-600' : 'text-zinc-400'}`}>
-              <Icon name={item.icon} size={22} className={app.page === item.id ? 'fill-sky-100' : ''} />
+            <button key={item.id} onClick={() => navigate(item.id)} className={`flex flex-col items-center justify-center w-full h-full ${app.page === item.id ? 'text-indigo-650' : 'text-zinc-400'}`}>
+              <Icon name={item.icon} size={22} className={app.page === item.id ? 'fill-indigo-100/50' : ''} />
               <span className={`text-[10px] mt-1 font-medium ${app.page === item.id ? 'font-bold' : ''}`}>{item.label}</span>
             </button>
           ))}
