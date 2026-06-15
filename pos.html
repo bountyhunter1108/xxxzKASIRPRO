@@ -5,7 +5,7 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, shrink-to-fit=no">
   <title>Smile POS - Login</title>
   <link rel="icon" type="image/jpeg" href="./logo.jpg">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -172,7 +172,17 @@
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     
-    html, body { margin: 0; min-height: 100%; background-color: #f4f4f5; }
+        html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #f4f4f5;
+      touch-action: manipulation;
+      -webkit-text-size-adjust: 100% !important;
+      text-size-adjust: 100% !important;
+    }
     body { -webkit-tap-highlight-color: transparent; }
     .custom-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
     .custom-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -198,10 +208,36 @@
 
     @media (max-width: 768px) {
       .touch-target { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
+      input[type="text"], input[type="number"], input[type="email"], input[type="password"], input[type="search"], textarea, select {
+        font-size: 16px !important;
+      }
     }
     .print-only { display: none !important; }
   </style>
+  <script>
+    // Lock viewport scale to exactly 100% and prevent touch/pinch/double-tap zoom
+    (function() {
+      document.addEventListener('gesturestart', function(e) {
+        e.preventDefault();
+      });
+      document.addEventListener('gesturechange', function(e) {
+        e.preventDefault();
+      });
+      document.addEventListener('gestureend', function(e) {
+        e.preventDefault();
+      });
+      var lastTouchEnd = 0;
+      document.addEventListener('touchend', function(e) {
+        var now = (new Date()).getTime();
+        if (now - lastTouchEnd <= 300) {
+          e.preventDefault();
+        }
+        lastTouchEnd = now;
+      }, { passive: false });
+    })();
+  </script>
 </head>
+
 <body class="text-zinc-800 antialiased selection:bg-sky-200">
   <div id="root"></div>
 
@@ -287,7 +323,7 @@
       transactions: [],
       categories: ['Makanan', 'Minuman', 'Snack'],
       roles: [
-        { id: 'admin', name: 'Admin', baseRole: 'admin', locked: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+        { id: 'admin', name: 'Admin (Utama)', baseRole: 'admin', locked: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         { id: 'cashier', name: 'Kasir', baseRole: 'cashier', locked: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         { id: 'dapur', name: 'Dapur', baseRole: 'dapur', locked: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         { id: 'owner', name: 'Pemilik', baseRole: 'owner', locked: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
@@ -320,9 +356,16 @@
 
     function encryptDB(text) {
       if (!text) return '';
+      const len = text.length;
+      const keyLen = DB_SECURE_KEY.length;
+      const arr = new Uint16Array(len);
+      for (let i = 0; i < len; i++) {
+        arr[i] = text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % keyLen);
+      }
       let result = '';
-      for (let i = 0; i < text.length; i++) {
-        result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+      const chunk = 8192;
+      for (let i = 0; i < len; i += chunk) {
+        result += String.fromCharCode.apply(null, arr.subarray(i, i + chunk));
       }
       try {
         return btoa(unescape(encodeURIComponent(result)));
@@ -343,9 +386,16 @@
         } catch(e) {
           text = atob(base64Text);
         }
+        const len = text.length;
+        const keyLen = DB_SECURE_KEY.length;
+        const arr = new Uint16Array(len);
+        for (let i = 0; i < len; i++) {
+          arr[i] = text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % keyLen);
+        }
         let result = '';
-        for (let i = 0; i < text.length; i++) {
-          result += String.fromCharCode(text.charCodeAt(i) ^ DB_SECURE_KEY.charCodeAt(i % DB_SECURE_KEY.length));
+        const chunk = 8192;
+        for (let i = 0; i < len; i += chunk) {
+          result += String.fromCharCode.apply(null, arr.subarray(i, i + chunk));
         }
         return result;
       } catch(e) {
@@ -370,7 +420,31 @@
         parsed.categories = parsed.categories || defaultData.categories;
         parsed.chatHistory = parsed.chatHistory || [];
         parsed.activityLogs = parsed.activityLogs || [];
-        parsed.roles = parsed.roles || defaultData.roles;
+                parsed.roles = parsed.roles || defaultData.roles;
+        // Ensure roles are correct and synchronized with exact display names from Foto 3
+        if (parsed.roles) {
+          const roleNames = {
+            'admin': 'Admin (Utama)',
+            'admin_operasional': 'Admin Operasional',
+            'admin_keuangan': 'Admin Keuangan (Finance)',
+            'admin_hr': 'Admin Personalia (HR)',
+            'admin_marketing': 'Admin Sales & Marketing',
+            'admin_gudang': 'Admin Gudang (Logistik)',
+            'cashier': 'Kasir',
+            'dapur': 'Dapur',
+            'keuangan': 'Keuangan',
+            'manager': 'Manajer',
+            'supervisor': 'Supervisor',
+            'staff': 'Staf'
+          };
+          parsed.roles = parsed.roles.map(r => {
+            if (roleNames[r.id]) {
+              r.name = roleNames[r.id];
+            }
+            return r;
+          });
+        }
+
         parsed.shifts = parsed.shifts || [];
         parsed.bypassRequests = parsed.bypassRequests || [];
         parsed.approvedBypasses = parsed.approvedBypasses || [];
@@ -1187,7 +1261,7 @@
         }, 3000);
       };
 
-      const refreshDB = () => setDbVersion(v => v + 1);
+      const refreshDB = () => { __db_cache = null; setDbVersion(v => v + 1); };
 
       // Supabase realtime subscription: apply remote `pos_sync` updates to local DB
       useEffect(() => {
@@ -2151,7 +2225,7 @@
       };
 
       return (
-        <div className={`${bgColors[toast.type]} text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-3 mb-2 animate-[slideIn_0.3s_ease-out]`}>
+        <div className={`${bgColors[toast.type]} text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-3 mb-2 `}>
           <Icon name={icons[toast.type]} size={20} />
           <span className="text-sm font-medium">{toast.message}</span>
           <button onClick={() => onClose(toast.id)} className="ml-2 p-1 hover:bg-white/20 rounded-lg">
@@ -2177,6 +2251,8 @@
 
       handleLogout = () => {
         try {
+          localStorage.removeItem('index_compiled_js');
+          localStorage.removeItem('index_compiled_js_hash');
           localStorage.removeItem('pos_compiled_js');
           localStorage.removeItem('pos_compiled_js_hash');
           localStorage.removeItem('kasir_compiled_js');
@@ -2185,6 +2261,8 @@
           localStorage.removeItem('owner_compiled_js_hash');
           localStorage.removeItem('admin_compiled_js');
           localStorage.removeItem('admin_compiled_js_hash');
+          localStorage.removeItem('dapur_compiled_js');
+          localStorage.removeItem('dapur_compiled_js_hash');
         } catch (e) {}
         sessionStorage.removeItem('pos_user');
         sessionStorage.removeItem('pos_locked');
@@ -2318,8 +2396,8 @@
     function PermissionPromptModal({ permissionPrompt }) {
       const [hideFuture, setHideFuture] = useState(false);
       return (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-md animate-[fadeIn_0.2s_ease-out] no-print">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-[scaleIn_0.3s_ease-out] border border-zinc-200 p-6 flex flex-col items-center text-center">
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-md  no-print">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden  border border-zinc-200 p-6 flex flex-col items-center text-center">
             <div className="w-14 h-14 bg-sky-50 text-sky-600 rounded-full flex items-center justify-center mb-4 shadow-inner">
               <Icon name="shield-alert" size={28} />
             </div>
@@ -2374,8 +2452,8 @@
       const iconColor = isDanger ? 'bg-rose-50 text-rose-600' : (customAlert.type === 'success' ? 'bg-emerald-50 text-emerald-600' : 'bg-sky-50 text-sky-600');
       
       return (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-md animate-[fadeIn_0.2s_ease-out] no-print">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-[scaleIn_0.3s_ease-out] border border-zinc-200 p-6 flex flex-col items-center text-center">
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-md  no-print">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden  border border-zinc-200 p-6 flex flex-col items-center text-center">
             <div className={`w-14 h-14 ${iconColor} rounded-full flex items-center justify-center mb-4 shadow-inner`}>
               <Icon name={iconName} size={28} />
             </div>
@@ -2581,7 +2659,7 @@
       if (twoFactorUser) {
         return (
           <div className="min-h-screen flex items-center justify-center bg-zinc-100 p-4">
-            <div className="w-full max-w-sm bg-white rounded-3xl shadow-xl overflow-hidden animate-[scaleIn_0.3s_ease-out] border border-zinc-200">
+            <div className="w-full max-w-sm bg-white rounded-3xl shadow-xl overflow-hidden  border border-zinc-200">
               <div className="bg-zinc-950 p-6 text-center text-white">
                 <div className="w-12 h-12 bg-sky-500 rounded-full flex items-center justify-center mx-auto mb-3 text-white shadow-lg">
                   <Icon name="shield-check" size={24} />
@@ -2633,10 +2711,14 @@
           <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-sky-500/5 rounded-full blur-[120px] pointer-events-none"></div>
           <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-indigo-500/5 rounded-full blur-[120px] pointer-events-none"></div>
 
-          <div className="w-full max-w-md bg-white border border-zinc-200/80 rounded-[32px] shadow-xl overflow-hidden animate-[scaleIn_0.3s_ease-out] relative z-10">
+          <div className="w-full max-w-md bg-white border border-zinc-200/80 rounded-[32px] shadow-xl overflow-hidden  relative z-10">
             <div className="p-8 text-center border-b border-zinc-150 bg-zinc-50/50">
-              <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 overflow-hidden border border-zinc-200 shadow-md">
-                <img src="./logo_smile.jpg" alt="Logo" className="w-full h-full object-cover" />
+              <div className="w-16 h-16 flex items-center justify-center mx-auto mb-4 overflow-hidden">
+                <img src="./logo_smile.jpg" alt="Logo" className="w-full h-full object-contain" onError={(e) => {
+                  e.target.onerror = null;
+                  e.target.style.display = 'none';
+                  e.target.parentNode.innerHTML = `<svg class="w-10 h-10 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+                }} />
               </div>
               <h1 className="text-xl font-bold tracking-tight text-zinc-900">Smile POS</h1>
               <p className="text-zinc-500 mt-1 text-xs font-semibold uppercase tracking-wider">Sistem Kasir Pintar</p>
@@ -2644,7 +2726,7 @@
             
             <form onSubmit={handleLogin} className="p-8 space-y-6 text-left" autoComplete="off">
               {error && (
-                <div className="p-4 bg-rose-50 border border-rose-200/60 text-rose-700 rounded-xl flex items-center gap-3 text-xs font-semibold animate-[fadeIn_0.2s]">
+                <div className="p-4 bg-rose-50 border border-rose-200/60 text-rose-700 rounded-xl flex items-center gap-3 text-xs font-semibold ">
                   <Icon name="alert-circle" size={16} className="text-rose-500" /> {error}
                 </div>
               )}
@@ -2723,8 +2805,8 @@
 
           {/* Modal Input Kredensial Pemilik */}
           {showOwnerLogin && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/40 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
-              <div className="bg-white rounded-[24px] shadow-2xl w-full max-w-sm overflow-hidden border border-zinc-200 animate-[scaleIn_0.2s_ease-out]">
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/40 backdrop-blur-sm ">
+              <div className="bg-white rounded-[24px] shadow-2xl w-full max-w-sm overflow-hidden border border-zinc-200 ">
                 <div className="px-6 py-5 border-b border-zinc-150 flex justify-between items-center bg-zinc-50/50">
                   <div className="text-left font-bold text-zinc-800 text-sm flex items-center gap-2">
                     <Icon name="shield" className="text-sky-500" size={16} />
@@ -2788,7 +2870,7 @@
                   }
                 }} className="p-6 space-y-4 text-left">
                   {ownerError && (
-                    <div className="p-3.5 bg-rose-50 border border-rose-200/60 text-rose-700 rounded-xl text-xs font-semibold animate-[fadeIn_0.2s]">
+                    <div className="p-3.5 bg-rose-50 border border-rose-200/60 text-rose-700 rounded-xl text-xs font-semibold ">
                       {ownerError}
                     </div>
                   )}
@@ -3131,7 +3213,100 @@
         const db = getDB();
         const formatReply = (thought, reply) => `<thought>${thought}<\/thought>\n${reply}`;
 
-        // 1. Out of Scope Check
+        const prevMessages = messages || [];
+        const lastUserMsg = prevMessages.filter(m => m.sender === 'user').slice(-2, -1)[0]?.text?.toLowerCase() || '';
+        const lastBotMsg = prevMessages.filter(m => m.sender === 'bot').slice(-1)[0]?.text?.toLowerCase() || '';
+        
+        const isFollowUp = text.includes('cara') || text.includes('solusi') || text.includes('bagaimana') || text.includes('detail') || text.includes('jelaskan') || text.includes('kenapa') || text.includes('mengapa') || text.includes('atasi') || text.includes('langkah') || text.includes('lanjut') || text.includes('lagi');
+        
+        let contextTopic = '';
+        if (lastUserMsg.includes('printer') || lastBotMsg.includes('printer') || lastUserMsg.includes('cetak') || lastBotMsg.includes('cetak')) contextTopic = 'printer';
+        else if (lastUserMsg.includes('panik') || lastBotMsg.includes('panik') || lastUserMsg.includes('panic') || lastBotMsg.includes('panic')) contextTopic = 'panic';
+        else if (lastUserMsg.includes('stok') || lastBotMsg.includes('stok') || lastUserMsg.includes('habis') || lastBotMsg.includes('habis')) contextTopic = 'stok';
+        else if (lastUserMsg.includes('omset') || lastBotMsg.includes('omset') || lastUserMsg.includes('laba') || lastBotMsg.includes('laba')) contextTopic = 'omset';
+        else if (lastUserMsg.includes('sinkron') || lastBotMsg.includes('sinkron') || lastUserMsg.includes('sync') || lastBotMsg.includes('sync')) contextTopic = 'sync';
+        else if (lastUserMsg.includes('shift') || lastBotMsg.includes('shift')) contextTopic = 'shift';
+        else if (lastUserMsg.includes('qris') || lastBotMsg.includes('qris') || lastUserMsg.includes('bayar') || lastBotMsg.includes('bayar')) contextTopic = 'payment';
+
+        if (/^[\d\s+\-*\/().]+$/.test(text) && text.length >= 3) {
+          try {
+            const cleanExpr = text.replace(/[^0-9+\-*\/().\s]/g, '');
+            const result = eval(cleanExpr);
+            return formatReply(
+              `Mengevaluasi ekspresi aritmatika: "${cleanExpr}".`,
+              `📊 **Hasil Perhitungan Kalkulator:**\n\n\`\`\`\n${cleanExpr} = ${result.toLocaleString('id-ID')}\n\`\`\`\n\nAda perhitungan operasional lain yang ingin Anda hitung?`
+            );
+          } catch(e) {}
+        }
+
+        if (isFollowUp && contextTopic) {
+          if (contextTopic === 'printer') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang troubleshoot printer struk.",
+              "🔧 **Langkah Detail Troubleshooting Printer Struk (Lanjutan):**\n\n" +
+              "1. **Pastikan Sambungan Fisik:** Cabut kabel USB/power printer, tunggu 10 detik, lalu tancapkan kembali. Pastikan lampu indikator (Power) menyala hijau/biru solid (tidak merah/berkedip).\n" +
+              "2. **Reset Bluetooth (jika nirkabel):** Matikan Bluetooth di tablet/PC Anda, nyalakan kembali, lalu hapus pairing lama dan lakukan *pair* ulang dengan printer (PIN standar biasanya `0000` atau `1234`).\n" +
+              "3. **Cek Driver & Port:** Buka Control Panel -> Devices and Printers. Pastikan printer tidak berstatus 'Offline' atau 'Paused'. Klik kanan -> *Printer Properties* -> *Print Test Page* untuk menguji secara langsung.\n" +
+              "4. **Kertas Thermal:** Pastikan gulungan kertas thermal dipasang ke arah yang benar (sisi licin menghadap ke luar). Jika terbalik, hasil cetak akan kosong/putih polos."
+            );
+          }
+          if (contextTopic === 'stok') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang stok kritis dan logistik.",
+              "📦 **Panduan Pengadaan & Tindakan Stok Kritis (Lanjutan):**\n\n" +
+              "1. **Pemesanan ke Supplier:** Masuk ke menu **Pengadaan / Purchasing**.\n" +
+              "2. Buat draf pengadaan baru untuk barang dengan status kritis. Sistem akan otomatis mengisi estimasi kuantitas pengadaan ulang (restock quantity) berdasarkan batas aman minimum.\n" +
+              "3. **Bypass Approval Owner:** Jika total biaya di bawah Rp 500.000, sistem akan menyetujui transaksi secara otomatis. Di atas nominal tersebut, persetujuan akan dikirim ke panel Owner secara real-time.\n" +
+              "4. **Verifikasi Barang Datang:** Ketika barang tiba di gudang, Admin Gudang wajib memverifikasi jumlah fisik lalu mengeklik *Terima Barang* untuk memperbarui stok lokal secara otomatis."
+            );
+          }
+          if (contextTopic === 'panic') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang Mode Panik.",
+              "🛡️ **Solusi & Detail Mekanisme Mode Panik (Lanjutan):**\n\n" +
+              "- **Fungsi Utama:** Digunakan saat ada inspeksi mendadak atau situasi tidak kondusif di meja kasir. Layar kasir disamarkan menjadi kalkulator standar.\n" +
+              "- **Cara Reset/Keluar:** Cukup ketik angka **911** di tombol kalkulator penyamaran lalu klik **=** (sama dengan). Halaman kasir Anda akan kembali normal dalam 0.5 detik.\n" +
+              "- **Pengaturan Sandi:** Sandi default adalah `911`. Sandi ini dapat diubah di menu *Pengaturan Sistem & Keamanan* oleh Admin (Utama)."
+            );
+          }
+          if (contextTopic === 'omset') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang analisis finansial.",
+              "📈 **Strategi Optimalisasi Pendapatan & Margin (Lanjutan):**\n\n" +
+              "1. **Analisis Laba Kotor:** Jika laba kotor hari ini di bawah target, periksa HPP produk. Pastikan harga jual minimal 30% di atas HPP untuk kategori Makanan, dan 20% untuk Minuman.\n" +
+              "2. **Produk Terlaris (Best Seller):** Fokuskan promosi pada 3 produk teratas yang menyumbang volume transaksi terbesar. Gunakan strategi bundling (paket hemat).\n" +
+              "3. **Evaluasi Jam Sibuk:** Tambah staf kasir pada jam-jam sibuk (peak hours) untuk menghindari antrean panjang yang membuat pelanggan batal membeli."
+            );
+          }
+          if (contextTopic === 'sync') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang sinkronisasi data.",
+              "☁️ **Prosedur Penanganan Gagal Sinkronisasi (Lanjutan):**\n\n" +
+              "1. **Periksa Koneksi Internet:** Coba buka situs lain untuk memastikan koneksi Anda aktif.\n" +
+              "2. **Cek Latensi Database:** Buka modal Sync Cloud, jika latensi > 1000ms, database Supabase mungkin sedang sibuk. Tunggu beberapa menit.\n" +
+              "3. **Gunakan Mode Offline:** Smile POS didesain agar tetap bisa bertransaksi tanpa koneksi internet. Semua data disimpan di IndexedDB lokal dan akan disinkronkan otomatis saat koneksi pulih."
+            );
+          }
+          if (contextTopic === 'shift') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang shift kerja kasir.",
+              "🔒 **Detail Penutupan Shift & Penanganan Selisih Laci (Lanjutan):**\n\n" +
+              "1. **Jika Kas Pas:** Transaksi shift berjalan lancar. Uang fisik di laci sama persis dengan pencatatan sistem.\n" +
+              "2. **Jika Kas Kurang (Minus):** Kemungkinan kasir salah memberikan kembalian, atau lupa mencatat pengeluaran operasional (seperti beli es batu/sabun). Catat selisih ini pada log catatan sebelum klik *Tutup Shift*.\n" +
+              "3. **Jika Kas Lebih (Plus):** Kemungkinan kasir menerima uang lebih dari pelanggan tapi tidak diinput ke sistem, atau ada uang modal awal yang salah hitung."
+            );
+          }
+          if (contextTopic === 'payment') {
+            return formatReply(
+              "Menganalisis pertanyaan lanjutan tentang QRIS dan pembayaran.",
+              "💳 **Troubleshooting Metode Pembayaran & QRIS (Lanjutan):**\n\n" +
+              "1. **QRIS Gagal Scan:** Pastikan tingkat kecerahan layar monitor/tablet kasir minimal 80% agar scanner HP pelanggan mudah membaca QR. Pastikan juga koneksi internet lancar.\n" +
+              "2. **Status QRIS Mengambang:** Jika pelanggan mengklaim saldo terpotong tapi status di kasir belum sukses, klik *Cek Status Transaksi* untuk memaksa sistem memverifikasi callback API ke penyedia e-wallet.\n" +
+              "3. **Pembayaran Tunai:** Pastikan uang kertas yang diterima asli (periksa 3D). Gunakan tombol pintas kembalian cepat di layar untuk mempercepat transaksi."
+            );
+          }
+        }
+
         const posKeywords = [
           'pos', 'smile', 'kasir', 'printer', 'scanner', 'struk', 'panik', 'panic', 'shift', 'stok',
           'produk', 'laporan', 'login', 'owner', 'admin', 'dapur', 'password', 'bypass', 'jam',
@@ -3156,64 +3331,67 @@
           );
         }
 
-        // 2. Math Expression Evaluator
-        if (/^[\d\s+\-*\/().]+$/.test(text) && text.length >= 3) {
-          try {
-            const cleanExpr = text.replace(/[^0-9+\-*\/().\s]/g, '');
-            const result = eval(cleanExpr);
-            return formatReply(
-              `Mengevaluasi ekspresi matematika sederhana: "${cleanExpr}".\nMelakukan kalkulasi aritmatika langsung.`,
-              `**Hasil Perhitungan Aritmatika:**\n\n\`\`\`\n${cleanExpr} = ${result.toLocaleString('id-ID')}\n\`\`\``
-            );
-          } catch(e) {}
-        }
-
-        // 3. Mode Panik (Panic Mode)
         if (text.includes('panik') || text.includes('panic') || text.includes('darurat') || text.includes('kalkulator darurat')) {
           setTimeout(() => { if (appState.setIsPanicMode) appState.setIsPanicMode(true); }, 50);
           return formatReply(
-            "Mendeteksi sinyal bahaya atau instruksi penyamaran layar kasir (Mode Panik).\nMemanggil fungsi `setIsPanicMode(true)` secara asinkron.\nMenyiapkan panduan keluar dari penyamaran.",
-            "🚨 **MODE PANIK DIAKTIFKAN!** Layar kasir Anda telah disamarkan sebagai **Kalkulator Operasional Biasa** secara instan.\n\n**Cara Membuka Penyamaran:**\n- Ketik kode rahasia **911** pada kalkulator penyamaran.\n- Tekan tombol **=** (sama dengan) untuk masuk kembali ke sistem utama."
+            "Mengaktifkan Mode Panik kasir.",
+            "🚨 **MODE PANIK DIAKTIFKAN!** Layar kasir telah disamarkan menjadi **Kalkulator Operasional Toko** secara instan.\n\n" +
+            "**Cara Membuka Penyamaran:**\n" +
+            "1. Ketik kode keamanan **911** pada kalkulator penyamaran.\n" +
+            "2. Tekan tombol **=** (sama dengan).\n\n" +
+            "Sistem akan langsung membuka kembali antarmuka Smile POS tanpa kehilangan data transaksi yang sedang berjalan."
           );
         }
 
-        // 4. Tutup/Buka Shift Kasir
-        if (text.includes('tutup shift') || text.includes('buka shift') || text.includes('selisih kas')) {
+        if (text.includes('tutup shift') || text.includes('buka shift') || text.includes('selisih kas') || text.includes('modal laci')) {
           setTimeout(() => { if (appState.setShowTutupShiftModal) appState.setShowTutupShiftModal(true); }, 50);
           return formatReply(
-            "Mengekstrak maksud penutupan shift kasir.\nMenjalankan dialog Buka/Tutup Shift agar kasir memasukkan jumlah uang fisik di laci kas (audit selisih kas).",
-            "🔒 **Prosedur Tutup Shift Kasir**\n\nSaya telah membuka modal **Buka/Tutup Shift**.\n\n**Langkah-langkah Penutupan Shift:**\n1. Hitung seluruh uang tunai fisik di laci kas Anda saat ini.\n2. Masukkan nominalnya ke dalam kolom **Uang Laci Fisik**.\n3. Sistem akan otomatis menghitung selisih kas (apakah surplus atau minus) terhadap catatan penjualan sistem.\n4. Klik **Tutup Shift** untuk menyimpan laporan dan mencetak struk penutupan."
+            "Membuka modal tutup/buka shift kasir.",
+            "🔒 **Prosedur Tutup/Buka Shift Kasir**\n\n" +
+            "Modal **Buka/Tutup Shift** telah saya buka secara otomatis.\n\n" +
+            "**Langkah-langkah Penutupan Shift:**\n" +
+            "1. Hitung seluruh uang tunai fisik yang ada di dalam laci kasir saat ini.\n" +
+            "2. Masukkan jumlah tersebut pada kolom **Uang Laci Fisik**.\n" +
+            "3. Sistem akan otomatis menghitung selisih kas antara uang fisik dengan catatan transaksi sistem.\n" +
+            "4. Klik **Tutup Shift** untuk menyimpan laporan dan mencetak struk audit penutupan shift."
           );
         }
 
-        // 5. Sinkronisasi (Supabase Sync)
-        if (text.includes('sinkron') || text.includes('sync') || text.includes('singkron')) {
+        if (text.includes('sinkron') || text.includes('sync') || text.includes('singkron') || text.includes('cloud')) {
           setTimeout(() => { if (appState.setShowSyncModal) appState.setShowSyncModal(true); }, 50);
           return formatReply(
-            "Mendeteksi instruksi penyelarasan database local ke cloud Supabase.\nMembuka modal Sync Cloud.",
-            "☁️ **Penyelarasan Database Cloud**\n\nModal sinkronisasi **Supabase Cloud** telah dibuka. Di sini Anda dapat memantau status jaringan, melihat latensi koneksi, serta melakukan push/pull data offline secara manual."
+            "Membuka modal sinkronisasi Supabase cloud.",
+            "☁️ **Penyelarasan Data Supabase Cloud**\n\n" +
+            "Saya telah membuka modal **Sinkronisasi Database Cloud**.\n\n" +
+            "**Fitur Panel Sinkronisasi:**\n" +
+            "- **Status Koneksi:** Menampilkan apakah status jaringan terhubung secara real-time ke Supabase cloud.\n" +
+            "- **Latensi Jaringan:** Menunjukkan kecepatan respon cloud database Anda dalam milidetik.\n" +
+            "- **Data Pending:** Menampilkan jumlah transaksi lokal yang belum di-push ke cloud. Klik tombol *Push Data* untuk menyinkronkan data offline secara manual."
           );
         }
 
-        // 6. Inventaris & Stok Kritis (Live DB Query)
-        if (text.includes('stok') || text.includes('habis') || text.includes('menipis') || text.includes('kritis')) {
+        if (text.includes('stok') || text.includes('habis') || text.includes('menipis') || text.includes('kritis') || text.includes('produk')) {
           const lowStock = (db.products || []).filter(p => p.active !== false && (p.stock || 0) <= (p.minStock || 5));
           if (lowStock.length === 0) {
             return formatReply(
-              "Memeriksa database inventaris produk (db.products).\nHasil filter stok <= minStock kosong.",
-              "✅ **Status Inventaris Aman!**\n\nSeluruh produk aktif saat ini memiliki jumlah stok yang aman di atas batas minimum."
+              "Memeriksa database inventaris produk.",
+              "✅ **Status Inventaris Aman!**\n\n" +
+              "Tidak ditemukan produk aktif dengan stok di bawah batas minimum keamanan. Semua produk memiliki tingkat stok yang memadai.\n\n" +
+              "Apakah Anda ingin melihat panduan melakukan pengadaan barang baru?"
             );
           }
-          const list = lowStock.slice(0, 6).map(p => `- **${p.name}**: Sisa **${p.stock}** unit (Min: ${p.minStock || 5} unit)`).join('\n');
+          const list = lowStock.slice(0, 8).map(p => `- **${p.name}**: Sisa **${p.stock}** unit (Batas minimum: ${p.minStock || 5} unit)`).join('\n');
           const totalRestockCost = lowStock.reduce((s, p) => s + (Math.max(0, (p.minStock || 5) - p.stock) * (p.cost || 0)), 0);
           return formatReply(
-            "Melakukan query database inventaris produk (db.products) secara real-time.\nMenyaring produk dengan stok kritis dan menghitung anggaran pengadaan ulang.",
-            `⚠️ **Peringatan Stok Kritis (${lowStock.length} Produk):**\n\n${list}\n\n---\n💰 **Estimasi Anggaran Restock:** Rp ${totalRestockCost.toLocaleString('id-ID')}\n_Silakan ajukan proposal pengadaan pada menu Pengadaan._`
+            "Melakukan filter stok kritis dari database lokal secara real-time.",
+            `⚠️ **Peringatan Stok Kritis (${lowStock.length} Produk):**\n\n${list}\n\n` +
+            `---\n` +
+            `💰 **Estimasi Anggaran Restock:** Rp ${totalRestockCost.toLocaleString('id-ID')}\n` +
+            `*Tindakan:* Anda dapat melakukan restock langsung melalui menu **Pengadaan / Purchasing**.`
           );
         }
 
-        // 7. Omset & Laporan Penjualan Hari Ini (Live DB Query)
-        if (text.includes('omset') || text.includes('penjualan') || text.includes('pendapatan') || text.includes('laba') || text.includes('untung')) {
+        if (text.includes('omset') || text.includes('penjualan') || text.includes('pendapatan') || text.includes('laba') || text.includes('untung') || text.includes('transaksi')) {
           const todayStr = new Date().toLocaleDateString('en-CA');
           const todayTx = (db.transactions || []).filter(t => {
             const d = new Date(t.date || t.timestamp);
@@ -3222,94 +3400,84 @@
           const revenue = todayTx.reduce((sum, t) => sum + (t.total || 0), 0);
           const profit = todayTx.reduce((sum, t) => sum + (t.profit || (t.total - t.cost) || 0), 0);
           return formatReply(
-            "Melakukan query database transaksi (db.transactions) untuk tanggal hari ini.\nMenyaring transaksi aktif dan menghitung total omset kotor serta laba bersih.",
-            `📊 **Laporan Finansial Real-time Hari Ini:**\n\n` +
-            `- **Jumlah Transaksi**: ${todayTx.length} Nota\n` +
+            "Menghitung total transaksi dan laba kotor hari ini.",
+            `📊 **Laporan Finansial Hari Ini (Real-time):**\n\n` +
+            `- **Total Transaksi (Nota)**: ${todayTx.length} Transaksi\n` +
             `- **Total Pendapatan (Omset)**: Rp ${revenue.toLocaleString('id-ID')}\n` +
-            `- **Estimasi Laba Bersih**: Rp ${profit.toLocaleString('id-ID')}\n\n` +
-            `*Catatan: Angka di atas dihitung otomatis berdasarkan database lokal perangkat Anda saat ini.*`
+            `- **Estimasi Laba Kotor**: Rp ${profit.toLocaleString('id-ID')}\n\n` +
+            `*Catatan:* Laba kotor dihitung berdasarkan harga jual dikurangi Harga Pokok Penjualan (HPP) per barang.`
           );
         }
 
-        // 8. Troubleshoot Printer & Scanner
-        if (text.includes('printer') || text.includes('cetak') || text.includes('struk') || text.includes('scanner') || text.includes('sambung')) {
+        if (text.includes('printer') || text.includes('cetak') || text.includes('struk') || text.includes('scanner') || text.includes('kabel') || text.includes('bluetooth')) {
           return formatReply(
-            "Mengidentifikasi kendala perangkat keras (hardware troubleshoot).\nMenyusun panduan koneksi printer struk Thermal bluetooth/USB/IP.",
-            "🔌 **Panduan Koneksi Printer Struk & Barcode Scanner:**\n\n" +
-            "**1. Printer Struk (Bluetooth/USB/Network):**\n" +
-            "- Masuk ke menu **Pengaturan Perangkat (Hardware)** di pojok kanan atas.\n" +
-            "- Pilih **Bluetooth** (aktifkan bluetooth HP/Laptop lalu cari printer), **USB** (pastikan driver terinstal), atau **Ethernet/Network** (masukkan IP Address printer, misal: `192.168.1.100`).\n" +
-            "- Jika kertas macet (paper jam) atau printer offline, matikan unit selama 5 detik, bersihkan laci kertas, lalu nyalakan kembali.\n\n" +
+            "Mengidentifikasi kendala printer struk dan scanner.",
+            "🔌 **Troubleshooting Perangkat Keras Kasir:**\n\n" +
+            "**1. Printer Struk Thermal Bluetooth/USB:**\n" +
+            "- Pastikan kabel daya printer terpasang erat and saklar ON.\n" +
+            "- Buka **Pengaturan Perangkat (Hardware)** di pojok kanan atas, klik *Cari Perangkat* untuk mendeteksi printer.\n" +
+            "- Jika hasil cetak kosong, pastikan kertas thermal terpasang dengan benar (tidak terbalik).\n\n" +
             "**2. Barcode Scanner:**\n" +
-            "- Pastikan scanner terdeteksi sebagai mode keyboard (HID). Uji dengan memindai barcode di notepad."
+            "- Pastikan port USB scanner terhubung ke PC/Tablet.\n" +
+            "- Uji scanner dengan memindai barcode produk pada notepad atau kolom pencarian. Scanner harus bertindak seperti input keyboard otomatis."
           );
         }
 
-        // 9. Shortcuts Keyboard
-        if (text.includes('shortcut') || text.includes('tombol') || text.includes('pintas')) {
+        if (text.includes('shortcut') || text.includes('tombol') || text.includes('pintas') || text.includes('keyboard')) {
           return formatReply(
-            "Menampilkan daftar tombol pintas (keyboard shortcuts) kasir.",
-            "⌨️ **Keyboard Shortcuts Kasir (Navigasi Cepat):**\n\n" +
-            "- **F1**: Tampilkan Panduan Keyboard Shortcuts\n" +
-            "- **F2**: Fokus ke Kolom Pencarian Produk\n" +
-            "- **F4**: Buka Modal Diskon Transaksi\n" +
-            "- **F7**: Selesaikan Pembayaran (Bayar Sekarang)\n" +
-            "- **F8**: Bersihkan Seluruh Keranjang Belanja\n" +
-            "- **F9**: Fokus ke Pencarian Pelanggan (Member)\n" +
-            "- **ESC**: Tutup / Batalkan Modal Aktif"
+            "Mengirim daftar shortcut keyboard kasir.",
+            "⌨️ **Tombol Pintas (Keyboard Shortcuts) Kasir:**\n\n" +
+            "- **F1**: Tampilkan bantuan / daftar shortcuts\n" +
+            "- **F2**: Fokus ke kolom pencarian produk\n" +
+            "- **F4**: Buka modal diskon transaksi\n" +
+            "- **F7**: Selesaikan transaksi (modal bayar)\n" +
+            "- **F8**: Batalkan & kosongkan keranjang belanja\n" +
+            "- **F9**: Fokus ke pencarian member / pelanggan\n" +
+            "- **ESC**: Tutup modal atau dialog aktif"
           );
         }
 
-        // 10. Pelanggan & Loyalty Poin
-        if (text.includes('pelanggan') || text.includes('member') || text.includes('poin') || text.includes('loyalty')) {
+        if (text.includes('pelanggan') || text.includes('member') || text.includes('poin') || text.includes('loyalty') || text.includes('diskon')) {
           const totalMembers = (db.members || []).length;
           return formatReply(
-            "Mendeteksi pertanyaan tentang CRM/Loyalty Member.\nMengambil data pelanggan aktif dan mengkalkulasi total database.",
-            `👥 **Sistem Loyalty & Pelanggan:**\n\n` +
+            "Menganalisis sistem loyalty member.",
+            `👥 **Sistem Pelanggan & Loyalty Poin:**\n\n` +
             `- **Total Member Terdaftar**: ${totalMembers} Orang\n\n` +
-            `**Skema Poin & Diskon:**\n` +
-            `- Setiap pembelanjaan kelipatan **Rp 10.000** bernilai **1 Poin**.\n` +
-            `- Poin dapat ditukar dengan potongan diskon belanja langsung saat transaksi di layar kasir.`
+            `**Skema Poin & Diskon Pelanggan:**\n` +
+            `- Setiap transaksi kelipatan **Rp 10.000** akan memberikan **1 Poin** kepada member.\n` +
+            `- Poin dapat ditukarkan langsung di kasir sebagai potongan nominal belanja saat melakukan transaksi.`
           );
         }
 
-        // 11. Keamanan & Log Audit
-        if (text.includes('keamanan') || text.includes('audit') || text.includes('log') || text.includes('sesi')) {
+        if (text.includes('keamanan') || text.includes('audit') || text.includes('log') || text.includes('sesi') || text.includes('akses')) {
           const activeSessionsCount = (db.deviceSessions || []).length;
           return formatReply(
-            "Memeriksa status keamanan perangkat dan log audit (db.deviceSessions).",
+            "Menganalisis sesi keamanan.",
             `🛡️ **Log Keamanan & Sesi Aktif:**\n\n` +
-            `- **Sesi Perangkat Terbuka**: ${activeSessionsCount} perangkat\n` +
-            `- Semua aktivitas pengguna (hapus transaksi, edit stok, login) tercatat secara ketat di menu **Log Audit Lengkap** demi keamanan internal toko.`
+            `- **Sesi Perangkat Terdeteksi**: ${activeSessionsCount} Perangkat aktif\n` +
+            `- Semua aktivitas sensitif (hapus produk, edit stok, bypass persetujuan) dicatat secara otomatis dalam log audit untuk mencegah kecurangan internal.`
           );
         }
 
-        // 12. HPP & Laba Rugi
         if (text.includes('hpp') || text.includes('modal') || text.includes('laba rugi') || text.includes('keuangan')) {
           return formatReply(
-            "Mengidentifikasi topik akuntansi HPP (Harga Pokok Penjualan).",
+            "Mengidentifikasi topik akuntansi HPP.",
             `📈 **Analisis HPP & Margin:**\n\n` +
             `1. Pastikan Anda telah memasukkan nilai **Modal (HPP)** dengan benar saat menambahkan produk baru.\n` +
             `2. Sistem menggunakan metode FIFO/Rata-rata untuk menghitung margin laba kotor di menu **Laporan Penjualan** secara otomatis.`
           );
         }
 
-        // 13. Daftar Perintah AI & Help
-        if (text.includes('perintah') || text.includes('bantuan') || text.includes('help') || text.includes('halo') || text.includes('hi') || text.includes('assalamualaikum')) {
-          return formatReply(
-            "Menyusun daftar perintah bantuan AI Asisten Smile POS.",
-            "👋 **Halo! Saya Asisten AI Smile POS.**\n\nBerikut adalah beberapa hal yang bisa Anda tanyakan kepada saya:\n" +
-            "1. **Tindakan Sistem**: Ketik *'Masuk mode panik'*, *'Tutup shift'*, *'Kunci layar'*, atau *'Kosongkan keranjang'*.\n" +
-            "2. **Query Database**: Ketik *'Cek omset hari ini'* atau *'Solusi stok menipis'* untuk mendapatkan data langsung dari sistem.\n" +
-            "3. **Panduan Teknis**: Ketik *'Bagaimana koneksi printer?'* atau *'Daftar tombol shortcut'*.\n" +
-            "4. **Kalkulator**: Ketik langsung perhitungan matematika, contoh: *'50000 * 12'*."
-          );
-        }
-
-        // Default Reply
         return formatReply(
-          "Gagal mencocokkan intent spesifik. Mengarahkan pengguna ke panduan umum bantuan.",
-          "Saya memahami ketikan Anda berkaitan dengan operasional toko. Namun, untuk jawaban yang lebih spesifik, silakan gunakan kata kunci seperti **omset**, **stok**, **printer**, **mode panik**, atau ketik **bantuan** untuk panduan lengkap perintah."
+          "Menyambut pengguna dan menampilkan daftar perintah AI.",
+          "👋 **Halo! Saya AI Asisten Smile POS.** Saya siap membantu operasional toko Anda.\n\n" +
+          "**Daftar kata kunci yang dapat Anda tanyakan kepada saya:**\n" +
+          "1. 📈 **'Cek omset hari ini'** - Melihat ringkasan penjualan, transaksi, dan estimasi laba.\n" +
+          "2. ⚠️ **'Solusi stok menipis'** - Menampilkan produk-produk dengan stok kritis dan estimasi biaya restock.\n" +
+          "3. 🚨 **'Masuk mode panik'** - Menyamarkan layar kasir menjadi kalkulator operasional instan.\n" +
+          "4. 🔒 **'Tutup shift kasir'** - Panduan dan akses ke modal penutupan shift audit kasir.\n" +
+          "5. 🔌 **'Troubleshoot printer struk'** - Panduan sambungan printer thermal bluetooth/USB.\n" +
+          "6. ⌨️ **'Daftar tombol shortcut'** - Pintasan cepat keyboard kasir."
         );
       };
 
@@ -3412,7 +3580,7 @@
           {/* Chat Window Container */}
           <div 
             style={{ display: isOpen ? 'flex' : 'none' }}
-            className="mb-4 w-[380px] h-[550px] bg-white/95 backdrop-blur-md rounded-[28px] shadow-[0_24px_64px_-12px_rgba(0,0,0,0.18)] border border-zinc-200 overflow-hidden flex flex-col animate-[slideUp_0.3s_ease-out] text-left font-sans"
+            className="mb-4 w-[calc(100vw-2rem)] max-w-[380px] h-[500px] md:h-[550px] bg-white rounded-[24px] shadow-[0_16px_48px_rgba(0,0,0,0.12)] border border-zinc-200 overflow-hidden flex flex-col text-left font-sans"
           >
             {/* Header */}
             <div className="px-6 py-4 bg-zinc-900 text-white flex items-center justify-between border-b border-zinc-800 flex-shrink-0">
@@ -3616,7 +3784,7 @@
               )}
             </div>
             {!isOpen && (
-              <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full animate-pulse"></span>
+              <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full"></span>
             )}
             {!isOpen && (
               <span className="absolute right-16 px-3 py-1.5 bg-zinc-900 text-white text-[10px] font-bold rounded-lg shadow-xl opacity-0 group-hover:opacity-100 transition duration-300 pointer-events-none whitespace-nowrap border border-zinc-800">
@@ -3715,19 +3883,6 @@
         document.body.appendChild(script);
       } else {
         console.log('[Cache] No valid compiled cache found. Compiling with Babel...');
-        const rootEl = document.getElementById('root');
-        if (rootEl) {
-          rootEl.innerHTML = `
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#f4f4f5;color:#18181b;font-family:sans-serif;">
-              <div style="width:40px;height:40px;border:4px solid #e4e4e7;border-top-color:#4f46e5;border-radius:50%;animation:spin 1s linear infinite;"></div>
-              <h2 style="font-size:18px;font-weight:700;margin-top:24px;letter-spacing:-0.025em;color:#18181b;">Mengoptimalkan Halaman...</h2>
-              <p style="font-size:12px;color:#71717a;margin-top:8px;">Hanya dilakukan sekali untuk memastikan kinerja maksimal.</p>
-              <style>
-                @keyframes spin { to { transform: rotate(360deg); } }
-              </style>
-            </div>
-          `;
-        }
 
         setTimeout(() => {
           try {
@@ -3751,7 +3906,7 @@
             script.text = sourceCode;
             document.body.appendChild(script);
           }
-        }, 50);
+        }, 1);
       }
     })();
   </script>

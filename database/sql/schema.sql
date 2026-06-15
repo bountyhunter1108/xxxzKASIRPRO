@@ -1,5 +1,8 @@
-﻿-- SQL Schema Definition for Smile POS
+-- SQL Schema Definition for Smile POS
 -- Targets PostgreSQL / PostgreSQL compat (Supabase)
+-- NOTE: Jika Anda menggunakan sinkronisasi Supabase (Cloud Sync),
+-- harap gunakan script setup khusus yang berada di file `supabase_setup.sql`
+-- untuk membuat tabel pos_sync dan stored procedure process_checkout.
 
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(50) PRIMARY KEY,
